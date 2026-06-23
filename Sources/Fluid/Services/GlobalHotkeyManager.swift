@@ -623,7 +623,7 @@ final class GlobalHotkeyManager: NSObject {
             if self.handlePromptModeKeyDown(keyCode: keyCode, modifiers: eventModifiers) { return nil }
 
             // Check command mode hotkey first
-            if self.commandModeShortcutEnabled, self.matchesCommandModeShortcut(keyCode: keyCode, modifiers: eventModifiers) {
+            if self.commandModeShortcutEnabled, self.commandModeShortcut.matches(keyCode: keyCode, modifiers: eventModifiers) {
                 switch self.hotkeyMode {
                 case .hold:
                     // Press and hold: start on keyDown, stop on keyUp
@@ -674,7 +674,7 @@ final class GlobalHotkeyManager: NSObject {
 
             // Check dedicated rewrite mode hotkey
             if self.rewriteModeShortcutEnabled {
-                if self.matchesRewriteModeShortcut(keyCode: keyCode, modifiers: eventModifiers) {
+                if self.rewriteModeShortcut.matches(keyCode: keyCode, modifiers: eventModifiers) {
                     switch self.hotkeyMode {
                     case .hold:
                         // Press and hold: start on keyDown, stop on keyUp
@@ -725,7 +725,7 @@ final class GlobalHotkeyManager: NSObject {
             }
 
             // Then check transcription hotkey
-            if self.matchesShortcut(keyCode: keyCode, modifiers: eventModifiers) {
+            if self.shortcut.matches(keyCode: keyCode, modifiers: eventModifiers) {
                 self.handlePrimaryDictationTriggerDown()
                 return nil
             }
@@ -1324,7 +1324,7 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     private func handlePromptModeKeyDown(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
-        guard self.promptModeShortcutEnabled, self.matchesPromptModeShortcut(keyCode: keyCode, modifiers: modifiers) else { return false }
+        guard self.promptModeShortcutEnabled, self.promptModeShortcut.matches(keyCode: keyCode, modifiers: modifiers) else { return false }
         switch self.hotkeyMode {
         case .hold:
             if !self.isPromptModeKeyPressed {
@@ -1732,22 +1732,6 @@ final class GlobalHotkeyManager: NSObject {
         } else {
             await self.asrService.stopWithoutTranscription()
         }
-    }
-
-    private func matchesShortcut(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
-        self.shortcut.matches(keyCode: keyCode, modifiers: modifiers)
-    }
-
-    private func matchesPromptModeShortcut(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
-        self.promptModeShortcut.matches(keyCode: keyCode, modifiers: modifiers)
-    }
-
-    private func matchesCommandModeShortcut(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
-        self.commandModeShortcut.matches(keyCode: keyCode, modifiers: modifiers)
-    }
-
-    private func matchesRewriteModeShortcut(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
-        self.rewriteModeShortcut.matches(keyCode: keyCode, modifiers: modifiers)
     }
 
     func isEventTapEnabled() -> Bool {

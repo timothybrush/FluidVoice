@@ -657,7 +657,7 @@ struct SettingsView: View {
                                         .font(.subheadline.weight(.medium))
                                         .foregroundStyle(.secondary)
 
-                                    Text("Primary dictation can use keys or an allowed mouse button. Changes usually apply immediately.")
+                                    Text("Primary dictation can use a keyboard shortcut or allowed mouse button. Changes usually apply immediately.")
                                         .font(.caption)
                                         .foregroundStyle(.tertiary)
 
@@ -666,7 +666,7 @@ struct SettingsView: View {
                                             icon: "mic.fill",
                                             iconColor: .secondary,
                                             title: "Primary Dictation Shortcut",
-                                            description: "Use a keyboard shortcut, side mouse button, or modified mouse click."
+                                            description: "Use a keyboard shortcut, auxiliary mouse button, or modified click."
                                         ),
                                         shortcut: self.hotkeyShortcut,
                                         isRecording: self.isRecording(.primaryDictation),

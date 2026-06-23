@@ -212,7 +212,7 @@ extension HotkeyShortcut {
     }
 
     var isMouseShortcut: Bool {
-        self.kind == .mouse && self.mouseButton != nil
+        self.kind == .mouse
     }
 
     var isUnmodifiedLeftOrRightClick: Bool {
@@ -272,19 +272,21 @@ extension HotkeyShortcut {
     }
 
     static func == (lhs: HotkeyShortcut, rhs: HotkeyShortcut) -> Bool {
-        if lhs.isMouseShortcut || rhs.isMouseShortcut {
-            return lhs.kind == rhs.kind &&
-                lhs.mouseButton == rhs.mouseButton &&
+        guard lhs.kind == rhs.kind else { return false }
+
+        switch lhs.kind {
+        case .mouse:
+            return lhs.mouseButton == rhs.mouseButton &&
                 lhs.relevantModifierFlags == rhs.relevantModifierFlags
-        }
+        case .keyboard:
+            let lhsModifierKeyCodes = lhs.normalizedModifierKeyCodes
+            let rhsModifierKeyCodes = rhs.normalizedModifierKeyCodes
+            if !lhsModifierKeyCodes.isEmpty, !rhsModifierKeyCodes.isEmpty {
+                return lhsModifierKeyCodes == rhsModifierKeyCodes
+            }
 
-        let lhsModifierKeyCodes = lhs.normalizedModifierKeyCodes
-        let rhsModifierKeyCodes = rhs.normalizedModifierKeyCodes
-        if !lhsModifierKeyCodes.isEmpty, !rhsModifierKeyCodes.isEmpty {
-            return lhsModifierKeyCodes == rhsModifierKeyCodes
+            return lhs.keyCode == rhs.keyCode && lhs.relevantModifierFlags == rhs.relevantModifierFlags
         }
-
-        return lhs.keyCode == rhs.keyCode && lhs.relevantModifierFlags == rhs.relevantModifierFlags
     }
 
     init(from decoder: Decoder) throws {
