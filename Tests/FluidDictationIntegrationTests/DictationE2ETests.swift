@@ -1,7 +1,6 @@
+@testable import FluidVoice_Debug
 import Foundation
 import XCTest
-
-@testable import FluidVoice_Debug
 
 @MainActor
 final class DictationE2ETests: XCTestCase {
@@ -22,9 +21,18 @@ final class DictationE2ETests: XCTestCase {
     private let commandModeLinkedToGlobalKey = "CommandModeLinkedToGlobal"
     private let commandModeSelectedProviderIDKey = "CommandModeSelectedProviderID"
     private let commandModeSelectedModelKey = "CommandModeSelectedModel"
-    private var privateAISelectedModelIDKey: String { PrivateAIProviderFeature.shared.selectedModelDefaultsKey }
-    private var privateAILocalModelPathKey: String { PrivateAIProviderFeature.shared.localModelPathDefaultsKey }
-    private var privateAIPrefixKVCacheEnabledKey: String { PrivateAIProviderFeature.shared.prefixCacheDefaultsKey }
+    private var privateAISelectedModelIDKey: String {
+        PrivateAIProviderFeature.shared.selectedModelDefaultsKey
+    }
+
+    private var privateAILocalModelPathKey: String {
+        PrivateAIProviderFeature.shared.localModelPathDefaultsKey
+    }
+
+    private var privateAIPrefixKVCacheEnabledKey: String {
+        PrivateAIProviderFeature.shared.prefixCacheDefaultsKey
+    }
+
     private let verifiedProviderFingerprintsKey = "VerifiedProviderFingerprints"
 
     func testTranscriptionStartSound_noneOptionHasNoFile() {
@@ -58,6 +66,19 @@ final class DictationE2ETests: XCTestCase {
             XCTAssertNil(defaults.object(forKey: self.enableTranscriptionSoundsKey))
             XCTAssertEqual(defaults.string(forKey: self.transcriptionStartSoundKey), SettingsStore.TranscriptionStartSound.fluidSfx2.rawValue)
         }
+    }
+
+    func testWhisperModelsUseFinalOnlyDictation() {
+        let whisperModels: [SettingsStore.SpeechModel] = [
+            .whisperTiny,
+            .whisperBase,
+            .whisperSmall,
+            .whisperMedium,
+            .whisperLargeTurbo,
+            .whisperLarge,
+        ]
+
+        XCTAssertTrue(whisperModels.allSatisfy { !$0.supportsStreaming })
     }
 
     func testDictationEndToEnd_whisperTiny_transcribesFixture() async throws {
@@ -535,12 +556,10 @@ final class DictationE2ETests: XCTestCase {
             if CharacterSet.punctuationCharacters.contains(scalar) { return " " }
             return Character(scalar)
         }
-        let collapsed = String(noPunct)
+        return String(noPunct)
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-
-        return collapsed
     }
 
     private func withRestoredDefaults(keys: [String], run: () -> Void) {

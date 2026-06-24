@@ -4,6 +4,9 @@ import Foundation
 import XCTest
 
 final class HotkeyShortcutTests: XCTestCase {
+    private let legacyHotkeyShortcutKey = "HotkeyShortcutKey"
+    private let primaryDictationShortcutsKey = "PrimaryDictationShortcuts"
+
     func testLegacyKeyboardShortcutPayloadDefaultsToKeyboardKind() throws {
         let json = #"{"keyCode":61,"modifierFlagsRawValue":0}"#
         let data = try XCTUnwrap(json.data(using: .utf8))
@@ -67,5 +70,55 @@ final class HotkeyShortcutTests: XCTestCase {
 
         XCTAssertEqual(mouseShortcut.displayString, "Mouse 4")
         XCTAssertNotEqual(mouseShortcut, keyboardShortcut)
+    }
+
+    func testPrimaryDictationShortcutsFallbackToLegacyShortcut() throws {
+        try self.withRestoredDefaults(keys: [self.legacyHotkeyShortcutKey, self.primaryDictationShortcutsKey]) {
+            let legacyShortcut = HotkeyShortcut(keyCode: 12, modifierFlags: [.option])
+            let data = try JSONEncoder().encode(legacyShortcut)
+            UserDefaults.standard.set(data, forKey: self.legacyHotkeyShortcutKey)
+            UserDefaults.standard.removeObject(forKey: self.primaryDictationShortcutsKey)
+
+            XCTAssertEqual(SettingsStore.shared.primaryDictationShortcuts, [legacyShortcut])
+            XCTAssertEqual(SettingsStore.shared.hotkeyShortcut, legacyShortcut)
+        }
+    }
+
+    func testPrimaryDictationShortcutsPersistMultipleAndUpdateLegacyFirst() throws {
+        try self.withRestoredDefaults(keys: [self.legacyHotkeyShortcutKey, self.primaryDictationShortcutsKey]) {
+            let mouseShortcut = HotkeyShortcut(mouseButton: 3, modifierFlags: NSEvent.ModifierFlags())
+            let keyboardShortcut = HotkeyShortcut(keyCode: 12, modifierFlags: [.option])
+
+            SettingsStore.shared.primaryDictationShortcuts = [mouseShortcut, keyboardShortcut, mouseShortcut]
+
+            XCTAssertEqual(SettingsStore.shared.primaryDictationShortcuts, [mouseShortcut, keyboardShortcut])
+            XCTAssertEqual(SettingsStore.shared.hotkeyShortcut, mouseShortcut)
+            XCTAssertEqual(
+                SettingsStore.shared.primaryDictationShortcutDisplayString,
+                "\(mouseShortcut.displayString) / \(keyboardShortcut.displayString)"
+            )
+        }
+    }
+
+    private func withRestoredDefaults(keys: [String], run: () throws -> Void) rethrows {
+        let defaults = UserDefaults.standard
+        var snapshot: [String: Any] = [:]
+        for key in keys {
+            if let value = defaults.object(forKey: key) {
+                snapshot[key] = value
+            }
+        }
+
+        defer {
+            for key in keys {
+                if let previous = snapshot[key] {
+                    defaults.set(previous, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        try run()
     }
 }
