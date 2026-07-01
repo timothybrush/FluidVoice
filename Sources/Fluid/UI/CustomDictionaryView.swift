@@ -252,9 +252,7 @@ struct CustomDictionaryView: View {
         .onDisappear {
             guard self.isTrainingRecording else { return }
             Task { @MainActor in
-                _ = await self.asr.stop(forDictionaryTraining: true)
-                self.isTrainingRecording = false
-                self.isTrainingProcessing = false
+                await self.stopTrainingSample()
             }
         }
     }
