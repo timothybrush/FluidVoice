@@ -225,14 +225,34 @@ final class TypingService {
         return Self.isCurrentlyFocusedElement(element, expectedPID: pid)
     }
 
-    private func isGhosttyTarget(preferredTargetPID: pid_t?) -> Bool {
-        guard let preferredTargetPID, preferredTargetPID > 0,
-              let app = NSRunningApplication(processIdentifier: preferredTargetPID)
+    private func isGhosttyApplication(pid: pid_t) -> Bool {
+        guard pid > 0,
+              let app = NSRunningApplication(processIdentifier: pid)
         else {
             return false
         }
 
         return app.bundleIdentifier == Self.ghosttyBundleIdentifier
+    }
+
+    private func ghosttyTargetPID(preferredTargetPID: pid_t?) -> pid_t? {
+        if let preferredTargetPID, preferredTargetPID > 0 {
+            return self.isGhosttyApplication(pid: preferredTargetPID) ? preferredTargetPID : nil
+        }
+
+        if let focusedPID = self.getSystemFocusedElementAndPID()?.pid,
+           self.isGhosttyApplication(pid: focusedPID)
+        {
+            return focusedPID
+        }
+
+        if let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+           self.isGhosttyApplication(pid: frontmostPID)
+        {
+            return frontmostPID
+        }
+
+        return nil
     }
 
     /// Best-effort: activates the app with the given PID, unless it's Fluid itself.
@@ -352,9 +372,11 @@ final class TypingService {
         self.log("[TypingService] insertTextInstantly called with \(text.count) characters")
         self.log("[TypingService] Attempting to type text: \"\(text.prefix(50))\(text.count > 50 ? "..." : "")\"")
 
-        if self.textInsertionMode == .standard, self.isGhosttyTarget(preferredTargetPID: preferredTargetPID) {
-            self.log("[TypingService] Ghostty target detected in standard mode; forcing Reliable Paste path")
-            if self.tryReliablePasteInsertion(text, preferredTargetPID: preferredTargetPID) {
+        if self.textInsertionMode == .standard,
+           let ghosttyTargetPID = self.ghosttyTargetPID(preferredTargetPID: preferredTargetPID)
+        {
+            self.log("[TypingService] Ghostty target detected in standard mode (PID \(ghosttyTargetPID)); forcing Reliable Paste path")
+            if self.tryReliablePasteInsertion(text, preferredTargetPID: ghosttyTargetPID) {
                 self.log("[TypingService] SUCCESS: Ghostty Reliable Paste path completed")
                 return
             }
