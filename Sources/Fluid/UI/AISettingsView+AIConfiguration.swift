@@ -759,7 +759,7 @@ extension AIEnhancementSettingsView {
 
     private func privateAIPrefixCacheRow(isBusy: Bool) -> some View {
         HStack(alignment: .center, spacing: 8) {
-            Text("Fast startup")
+            Text("Faster first result")
                 .font(.caption)
                 .frame(width: 124, alignment: .leading)
 
@@ -768,8 +768,8 @@ extension AIEnhancementSettingsView {
                 .controlSize(.mini)
                 .labelsHidden()
                 .disabled(isBusy)
-                .help("Keeps a reusable local prompt cache for faster first dictation.")
-                .accessibilityLabel("Fast startup")
+                .help("Keeps Fluid-1 ready so your first dictation finishes sooner.")
+                .accessibilityLabel("Faster first result")
 
             Spacer(minLength: 0)
         }
@@ -777,7 +777,7 @@ extension AIEnhancementSettingsView {
 
     private func privateAIBoostRow(isBusy: Bool) -> some View {
         HStack(alignment: .center, spacing: 8) {
-            Text("Fluid-1 Boost")
+            Text("Faster results")
                 .font(.caption)
                 .frame(width: 124, alignment: .leading)
 
@@ -786,10 +786,10 @@ extension AIEnhancementSettingsView {
                 .controlSize(.mini)
                 .labelsHidden()
                 .disabled(isBusy)
-                .help("Uses extra local acceleration for faster Fluid-1 responses.")
-                .accessibilityLabel("Fluid-1 Boost")
+                .help("Uses extra local acceleration so Fluid-1 finishes faster.")
+                .accessibilityLabel("Faster results")
 
-            Text("Up to 20% faster. Uses about 100 MB more memory.")
+            Text("Finishes dictation up to 15% faster. Uses about 100 MB more memory.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
@@ -1026,7 +1026,7 @@ extension AIEnhancementSettingsView {
 
         if self.privateAILoadState.isLoaded(model.id) {
             return PrivateAIProviderModelStatus(
-                detail: "Dictation-only model.",
+                detail: "For dictation only.",
                 color: Color.fluidGreen
             )
         }
@@ -1040,7 +1040,7 @@ extension AIEnhancementSettingsView {
 
         if self.isPrivateAIModelVerified(model) {
             return PrivateAIProviderModelStatus(
-                detail: "Dictation-only model.",
+                detail: "For dictation only.",
                 color: Color.fluidGreen
             )
         }
@@ -2139,7 +2139,8 @@ extension AIEnhancementSettingsView {
     private var privateAIContextCueText: String {
         let estimatedWords = SettingsStore.estimatedPrivateAIDictationWords(for: self.settings.privateAIContextTokenLimit)
         let estimatedMinutes = max(1, Int((Double(estimatedWords) / 150.0).rounded()))
-        return "Safe for about \(estimatedWords.formatted()) words / \(estimatedMinutes) min of dictation"
+        let minuteText = estimatedMinutes == 1 ? "1 minute" : "\(estimatedMinutes) minutes"
+        return "Good for about \(estimatedWords.formatted()) words or \(minuteText) of dictation"
     }
 
     var editProviderSection: some View {

@@ -1635,10 +1635,13 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    /// Experimental direct Core Audio capture. Default is deliberately off
-    /// until the low-latency backend has broader device coverage validation.
+    /// Direct Core Audio capture is enabled by default for faster recording
+    /// startup, while preserving explicit user opt-out.
     var experimentalDirectAudioCaptureEnabled: Bool {
-        get { self.defaults.bool(forKey: Keys.experimentalDirectAudioCaptureEnabled) }
+        get {
+            let value = self.defaults.object(forKey: Keys.experimentalDirectAudioCaptureEnabled)
+            return value as? Bool ?? true
+        }
         set {
             objectWillChange.send()
             self.defaults.set(newValue, forKey: Keys.experimentalDirectAudioCaptureEnabled)

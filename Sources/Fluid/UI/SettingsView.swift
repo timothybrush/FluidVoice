@@ -2513,9 +2513,9 @@ private extension SettingsView {
     var lowLatencyAudioCaptureToggle: some View {
         Group {
             self.settingsToggleRow(
-                title: "Low-Latency Audio Capture",
-                description: "Use the experimental direct Core Audio input path for faster recording startup. Turn this off if a microphone behaves unexpectedly.",
-                footnote: "Off by default while device compatibility is being validated.",
+                title: "Faster Recording Start",
+                description: "FluidVoice starts listening sooner, so your first word is less likely to be missed.",
+                footnote: "If your microphone does not work correctly, turn this off.",
                 isOn: Binding(
                     get: { self.settings.experimentalDirectAudioCaptureEnabled },
                     set: { enabled in
