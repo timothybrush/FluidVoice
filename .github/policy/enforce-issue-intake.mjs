@@ -5,6 +5,7 @@ import {
   addLabels,
   ensureLabel,
   githubRequest,
+  paginate,
   removeLabel,
   repoContext,
   upsertIssueComment,
@@ -28,6 +29,13 @@ function eventPayload() {
 
 function missingFieldsText(fields) {
   return fields.map((field) => `- ${field}`).join("\n");
+}
+
+async function existingBugWarningComment(context, issueNumber) {
+  const comments = await paginate(
+    `/repos/${context.owner}/${context.repo}/issues/${issueNumber}/comments`,
+  );
+  return comments.find((comment) => comment.body?.includes(BUG_MARKER));
 }
 
 async function enforceBugIssue(context, issue) {
@@ -66,6 +74,9 @@ async function closeStaleReproductionIssues(context) {
   const results = await githubRequest("GET", `/search/issues?q=${query}&per_page=100`);
 
   for (const issue of results.items) {
+    const warningComment = await existingBugWarningComment(context, issue.number);
+    if (!warningComment) continue;
+
     await upsertIssueComment(
       context,
       issue.number,
@@ -96,6 +107,9 @@ async function main() {
   const event = eventPayload();
   const issue = event.issue;
   if (!issue || issue.pull_request) return;
+
+  const warningComment = await existingBugWarningComment(context, issue.number);
+  if (event.action !== "opened" && !warningComment) return;
 
   const labels = issue.labels.map((label) =>
     typeof label === "string" ? label : label.name,

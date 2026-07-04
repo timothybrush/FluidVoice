@@ -1,10 +1,11 @@
 const PLACEHOLDER_PATTERNS = [
-  /brief description of what this pr does/i,
-  /add screenshots or video recording/i,
-  /issue number if applicable/i,
-  /what you expected to happen/i,
-  /what actually happened/i,
-  /steps to reproduce/i,
+  /^brief description of what this pr does(?: and why it is needed)?\.?$/i,
+  /^add screenshots or video recording.*$/i,
+  /^attach screenshots or a video.*$/i,
+  /^closes #?\(issue number.*$/i,
+  /^what you expected to happen\.?$/i,
+  /^what actually happened\.?$/i,
+  /^steps to reproduce:?$/i,
   /^\s*(n\/a|none|todo|tbd|\.\.\.)\s*$/i,
 ];
 

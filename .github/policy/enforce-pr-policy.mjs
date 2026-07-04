@@ -41,6 +41,13 @@ async function changedFiles(context, pullNumber) {
   return files.map((file) => file.filename);
 }
 
+async function existingWarningComment(context, pullNumber) {
+  const comments = await paginate(
+    `/repos/${context.owner}/${context.repo}/issues/${pullNumber}/comments`,
+  );
+  return comments.find((comment) => comment.body?.includes(MARKER));
+}
+
 function failureBody(result) {
   const missingList = result.missing.map((field) => `- ${field}`).join("\n");
   const visualFiles = result.visualFiles.length
@@ -60,7 +67,7 @@ function failureBody(result) {
   ].join("\n");
 }
 
-async function enforceOne(context, pr, { closeExpired, failOnInvalid }) {
+async function enforceOne(context, pr, { closeExpired, failOnInvalid, warningComment }) {
   const files = await changedFiles(context, pr.number);
   const result = validatePullRequest({ body: pr.body ?? "", changedFiles: files });
 
@@ -78,10 +85,14 @@ async function enforceOne(context, pr, { closeExpired, failOnInvalid }) {
     labelsToAdd.push(LABELS.screenshots.name);
   }
 
+  warningComment ??= await existingWarningComment(context, pr.number);
   await addLabels(context, pr.number, labelsToAdd);
   await upsertIssueComment(context, pr.number, MARKER, failureBody(result));
 
-  const expired = !pr.draft && hoursSince(pr.created_at) >= HOURS_BEFORE_CLOSE;
+  const expired =
+    !pr.draft &&
+    warningComment?.created_at &&
+    hoursSince(warningComment.created_at) >= HOURS_BEFORE_CLOSE;
   if (closeExpired && expired) {
     await githubRequest("PATCH", `/repos/${context.owner}/${context.repo}/pulls/${pr.number}`, {
       state: "closed",
@@ -119,15 +130,29 @@ async function main() {
   if (eventName === "schedule" || eventName === "workflow_dispatch") {
     const pulls = await openPullRequests(context);
     for (const pr of pulls) {
-      await enforceOne(context, pr, { closeExpired: true, failOnInvalid: false });
+      const warningComment = await existingWarningComment(context, pr.number);
+      if (!warningComment) continue;
+
+      await enforceOne(context, pr, {
+        closeExpired: true,
+        failOnInvalid: false,
+        warningComment,
+      });
     }
     return;
   }
 
   const event = eventPayload();
+  const warningComment = await existingWarningComment(context, event.pull_request.number);
+
+  if (event.action !== "opened" && !warningComment) {
+    return;
+  }
+
   await enforceOne(context, event.pull_request, {
     closeExpired: true,
     failOnInvalid: true,
+    warningComment,
   });
 }
 
