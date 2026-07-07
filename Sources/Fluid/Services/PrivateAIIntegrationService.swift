@@ -161,6 +161,20 @@ actor PrivateAIIntegrationService {
     ) async throws -> EnhancementResult {
         try await Self.provider.enhanceDictation(inputText, runtime: runtime, context: context)
     }
+
+    func enhanceDictation(
+        _ inputText: String,
+        runtime: RuntimeConfiguration,
+        context: AppContext,
+        streamHandler: PrivateAIStreamHandler?
+    ) async throws -> EnhancementResult {
+        try await Self.provider.enhanceDictation(
+            inputText,
+            runtime: runtime,
+            context: context,
+            streamHandler: streamHandler
+        )
+    }
 }
 
 private struct PrivateAIModelRemovalError: LocalizedError {

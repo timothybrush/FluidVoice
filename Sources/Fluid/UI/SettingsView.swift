@@ -940,16 +940,6 @@ struct SettingsView: View {
                                     Divider().opacity(0.2)
 
                                     self.optionToggleRow(
-                                        title: "Auto-Convert Punctuation",
-                                        description: "Turn spoken punctuation like comma, question mark, slash, and at sign into symbols before AI cleanup.",
-                                        isOn: Binding(
-                                            get: { SettingsStore.shared.autoConvertPunctuationEnabled },
-                                            set: { SettingsStore.shared.autoConvertPunctuationEnabled = $0 }
-                                        )
-                                    )
-                                    Divider().opacity(0.2)
-
-                                    self.optionToggleRow(
                                         title: "Space Between Dictations",
                                         description: "Add spacing so consecutive dictations chain without manually pressing the spacebar.",
                                         isOn: Binding(
@@ -1491,23 +1481,6 @@ struct SettingsView: View {
                             Text("Crash diagnostics are written to Library/Logs/Fluid/Fluid.log by default.")
                                 .font(self.theme.typography.bodySmall)
                                 .foregroundStyle(self.settingsSecondaryText)
-
-                            #if DEBUG
-                            Divider().padding(.vertical, 8)
-
-                            Button(role: .destructive) {
-                                self.settings.resetOnboardingProgress()
-                                DebugLogger.shared.info("Developer action: onboarding reset", source: "SettingsView")
-                            } label: {
-                                Label("Reset Onboarding (Dev)", systemImage: "arrow.counterclockwise")
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.regular)
-
-                            Text("Developer-only action. Immediately re-enters first-run onboarding flow.")
-                                .font(.caption)
-                                .foregroundStyle(self.settingsSecondaryText)
-                            #endif
                         }
                     }
                     .padding(16)

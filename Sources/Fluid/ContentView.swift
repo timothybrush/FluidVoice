@@ -45,6 +45,41 @@ enum AIProcessingError: LocalizedError {
     }
 }
 
+@MainActor
+private final class DictationAIStreamPreviewBuffer {
+    private let originalText: String
+    private var chunks: [String] = []
+    private var lastUIUpdate = CFAbsoluteTimeGetCurrent()
+    private let minimumUpdateInterval: CFTimeInterval = 0.033
+
+    init(originalText: String) {
+        self.originalText = originalText
+    }
+
+    func append(_ chunk: String) {
+        guard !chunk.isEmpty else { return }
+        self.chunks.append(chunk)
+
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - self.lastUIUpdate >= self.minimumUpdateInterval else { return }
+        self.lastUIUpdate = now
+        self.publish()
+    }
+
+    func flush() {
+        self.publish()
+    }
+
+    private func publish() {
+        let processedText = self.chunks.joined()
+        NotchContentState.shared.updateDictationAIDiffPreview(
+            originalText: self.originalText,
+            processedText: processedText
+        )
+        NotchOverlayManager.shared.updateTranscriptionText(processedText)
+    }
+}
+
 // MARK: - Sidebar Item Enum
 
 enum SidebarItem: Hashable {
@@ -1777,7 +1812,8 @@ struct ContentView: View {
     private func processTextWithAI(
         _ inputText: String,
         overrideSystemPrompt: String? = nil,
-        dictationSlot: SettingsStore.DictationShortcutSlot? = nil
+        dictationSlot: SettingsStore.DictationShortcutSlot? = nil,
+        streamHandler: PrivateAIStreamHandler? = nil
     ) async throws -> String {
         // CRITICAL FIX: Read current settings from SettingsStore, not stale @State copies
         // This ensures AI provider/model changes in AISettingsView take effect immediately
@@ -1855,7 +1891,8 @@ struct ContentView: View {
                     bundleID: appInfo.bundleId,
                     windowTitle: appInfo.windowTitle,
                     appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-                )
+                ),
+                streamHandler: streamHandler
             )
 
             if self.shouldTracePromptProcessing {
@@ -2012,15 +2049,10 @@ struct ContentView: View {
         }
         messages.append(["role": "user", "content": userMessageContent])
 
-        // NOTE: Transcription doesn't need streaming - the full result appears at once
-        // Streaming is only useful for Command/Rewrite modes where real-time display helps
-        // Using non-streaming is simpler and more reliable for transcription enhancement
-        let enableStreaming = false // Hardcoded off for transcription
+        let enableStreaming = streamHandler != nil
 
         // Build LLMClient configuration
-        // Note: No onContentChunk callback needed since we don't display real-time
-        // Thinking tokens are extracted but not displayed (no onThinkingChunk)
-        let config = LLMClient.Config(
+        var config = LLMClient.Config(
             messages: messages,
             model: derivedSelectedModel,
             baseURL: derivedBaseURL,
@@ -2030,6 +2062,11 @@ struct ContentView: View {
             temperature: isTemperatureUnsupported ? nil : 0.2,
             extraParameters: extraParams
         )
+        if enableStreaming {
+            config.onContentChunk = { chunk in
+                streamHandler?(chunk)
+            }
+        }
 
         DebugLogger.shared.info("Using LLMClient for transcription (streaming=\(enableStreaming))", source: "ContentView")
 
@@ -2229,18 +2266,28 @@ struct ContentView: View {
 
             // Update overlay text to show we're now refining (processing already true)
             self.appBench("processing_ui_request status=Refining")
+            NotchContentState.shared.clearDictationAIDiffPreview()
             NotchOverlayManager.shared.updateTranscriptionText("Refining")
             self.appBench("processing_ui_requested status=Refining")
 
             // Ensure the status label becomes visible immediately.
             await Task.yield()
 
+            let streamPreview = DictationAIStreamPreviewBuffer(originalText: normalizedTranscribedText)
+            let streamHandler: PrivateAIStreamHandler = { chunk in
+                Task { @MainActor in
+                    streamPreview.append(chunk)
+                }
+            }
+
             do {
                 finalText = try await self.processTextWithAI(
                     normalizedTranscribedText,
                     overrideSystemPrompt: promptOverride,
-                    dictationSlot: activeDictationSlot
+                    dictationSlot: activeDictationSlot,
+                    streamHandler: streamHandler
                 )
+                await streamPreview.flush()
             } catch {
                 // Fall back to the raw transcription so the user still gets
                 // their words typed instead of an error string.
@@ -2277,6 +2324,7 @@ struct ContentView: View {
 
             // Clear transient status text before leaving processing state to avoid
             // a brief non-shimmer "Refining..." preview flash.
+            NotchContentState.shared.clearDictationAIDiffPreview()
             NotchOverlayManager.shared.updateTranscriptionText("")
 
         } else {

@@ -2244,6 +2244,9 @@ struct BottomOverlayView: View {
 
     private var currentPreviewSizingText: String {
         guard self.shouldReservePreviewArea else { return "" }
+        if self.shouldShowProcessingPreview {
+            return self.processingPreviewText
+        }
         return self.shouldShowProcessingStatus ? self.processingStatusText : self.transcriptionPreviewText
     }
 
@@ -2256,7 +2259,10 @@ struct BottomOverlayView: View {
     }
 
     private var shouldSuppressPreviewDuringRelease: Bool {
-        self.contentState.isBottomOverlayReleaseTransitioning || self.contentState.isBottomOverlayDismissing
+        if self.shouldShowProcessingPreview {
+            return false
+        }
+        return self.contentState.isBottomOverlayReleaseTransitioning || self.contentState.isBottomOverlayDismissing
     }
 
     private func previewResizeBucket(for previewText: String) -> Int {
@@ -2295,6 +2301,48 @@ struct BottomOverlayView: View {
         guard !self.contentState.isProcessing else { return self.contentState.cachedPreviewText }
         guard Self.transientOverlayStatusTexts.contains(preview) else { return self.contentState.cachedPreviewText }
         return ""
+    }
+
+    private var processingPreviewText: String {
+        guard self.contentState.isProcessing else { return "" }
+        let preview = self.transcriptionPreviewText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !Self.transientOverlayStatusTexts.contains(preview) else { return "" }
+        return self.transcriptionPreviewText
+    }
+
+    private var shouldShowProcessingPreview: Bool {
+        !self.processingPreviewText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var processingPreviewSegments: [DictationAIDiffSegment] {
+        self.contentState.dictationAIDiffPreviewSegments
+    }
+
+    private func richPreviewText(_ previewText: String) -> Text {
+        let segments = self.processingPreviewSegments
+        guard !segments.isEmpty else {
+            return Text(previewText)
+                .foregroundColor(.white.opacity(0.9))
+        }
+
+        return segments.reduce(Text("")) { partial, segment in
+            partial + self.segmentText(segment)
+        }
+    }
+
+    private func segmentText(_ segment: DictationAIDiffSegment) -> Text {
+        switch segment.kind {
+        case .unchanged:
+            return Text(segment.text)
+                .foregroundColor(.white.opacity(0.9))
+        case .inserted:
+            return Text(segment.text)
+                .foregroundColor(Color(red: 0.36, green: 0.95, blue: 0.58))
+        case .removed:
+            return Text(segment.text)
+                .foregroundColor(Color(red: 1.0, green: 0.36, blue: 0.38))
+                .strikethrough(true, color: Color(red: 1.0, green: 0.36, blue: 0.38))
+        }
     }
 
     private var overlayBorderLineWidth: CGFloat {
@@ -2705,6 +2753,49 @@ struct BottomOverlayView: View {
         .frame(maxWidth: self.previewMaxWidth, alignment: .leading)
     }
 
+    private func scrollablePreviewText(_ previewText: String) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                self.richPreviewText(previewText)
+                    .font(.system(size: self.layout.transFontSize, weight: .medium))
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Color.clear.frame(height: 1).id("bottom")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .clipped()
+            .onChange(of: previewText) { _, _ in
+                DispatchQueue.main.async {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func dynamicPreviewText(_ previewText: String) -> some View {
+        if self.settings.overlaySize == .small {
+            self.richPreviewText(previewText)
+                .font(.system(size: self.layout.transFontSize, weight: .medium))
+                .multilineTextAlignment(.leading)
+                .lineLimit(1)
+                .truncationMode(.head)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, max(2, self.transcriptionVerticalPadding - 1))
+        } else {
+            self.richPreviewText(previewText)
+                .font(.system(size: self.layout.transFontSize, weight: .medium))
+                .multilineTextAlignment(.leading)
+                .lineLimit(Int(self.previewMaxHeight / max(self.estimatedPreviewLineHeight, 1)))
+                .truncationMode(.head)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: self.previewMaxWidth, alignment: .leading)
+                .padding(.vertical, self.transcriptionVerticalPadding)
+        }
+    }
+
     var body: some View {
         VStack(spacing: max(4, self.layout.vPadding / 2)) {
             if self.layout.showsTopControls {
@@ -2730,6 +2821,8 @@ struct BottomOverlayView: View {
                                 Color.clear
                             } else if self.shouldShowAIProcessingFailure {
                                 self.aiProcessingFailureView
+                            } else if self.shouldShowProcessingPreview {
+                                self.scrollablePreviewText(self.processingPreviewText)
                             } else if self.shouldShowProcessingStatus {
                                 // Temporarily hidden; the waveform sweep carries processing state.
                                 // ShimmerText(
@@ -2788,6 +2881,8 @@ struct BottomOverlayView: View {
                                 Color.clear
                             } else if self.shouldShowAIProcessingFailure {
                                 self.aiProcessingFailureView
+                            } else if self.shouldShowProcessingPreview {
+                                self.dynamicPreviewText(self.processingPreviewText)
                             } else if self.hasTranscription && !self.contentState.isProcessing {
                                 let previewText = self.transcriptionPreviewText
                                 if !previewText.isEmpty {

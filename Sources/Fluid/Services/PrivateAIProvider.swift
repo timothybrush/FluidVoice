@@ -1,5 +1,7 @@
 import Foundation
 
+typealias PrivateAIStreamHandler = @Sendable (String) -> Void
+
 struct PrivateAIModelArtifact: Sendable, Codable, Hashable {
     var identifier: String
     var filename: String
@@ -220,6 +222,12 @@ protocol PrivateAIIntegrationProviding: Sendable {
         runtime: PrivateAIIntegrationService.RuntimeConfiguration,
         context: PrivateAIIntegrationService.AppContext
     ) async throws -> PrivateAIIntegrationService.EnhancementResult
+    func enhanceDictation(
+        _ inputText: String,
+        runtime: PrivateAIIntegrationService.RuntimeConfiguration,
+        context: PrivateAIIntegrationService.AppContext,
+        streamHandler: PrivateAIStreamHandler?
+    ) async throws -> PrivateAIIntegrationService.EnhancementResult
 }
 
 extension PrivateAIIntegrationProviding {
@@ -234,6 +242,15 @@ extension PrivateAIIntegrationProviding {
 
     func shutdownForTermination() async {
         await self.unloadCachedRuntime(reason: "termination")
+    }
+
+    func enhanceDictation(
+        _ inputText: String,
+        runtime: PrivateAIIntegrationService.RuntimeConfiguration,
+        context: PrivateAIIntegrationService.AppContext,
+        streamHandler _: PrivateAIStreamHandler?
+    ) async throws -> PrivateAIIntegrationService.EnhancementResult {
+        try await self.enhanceDictation(inputText, runtime: runtime, context: context)
     }
 }
 

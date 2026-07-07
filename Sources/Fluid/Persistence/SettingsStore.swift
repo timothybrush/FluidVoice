@@ -2191,6 +2191,7 @@ final class SettingsStore: ObservableObject {
             self.defaults.set(newValue, forKey: Keys.onboardingCompleted)
             if newValue {
                 self.defaults.set(false, forKey: Keys.manualOnboardingResetRequested)
+                self.defaults.removeObject(forKey: Keys.manualOnboardingResetRequestedAt)
             }
         }
     }
@@ -2306,6 +2307,7 @@ final class SettingsStore: ObservableObject {
         objectWillChange.send()
         self.defaults.set(false, forKey: Keys.onboardingCompleted)
         self.defaults.set(true, forKey: Keys.manualOnboardingResetRequested)
+        self.defaults.set(Date(), forKey: Keys.manualOnboardingResetRequestedAt)
         self.defaults.set(0, forKey: Keys.onboardingCurrentStep)
         self.defaults.set(false, forKey: Keys.onboardingAISkipped)
         self.defaults.set(false, forKey: Keys.onboardingPlaygroundValidated)
@@ -2321,14 +2323,18 @@ final class SettingsStore: ObservableObject {
             $0 < Self.forcedOnboardingResetIntroducedAt
         } ?? false
         let hasExistingInstallSignal = self.hasLegacyUsageSignals() || hadOpenedBeforeForcedReset
+        let hasCurrentManualReset = self.defaults.bool(forKey: Keys.manualOnboardingResetRequested)
+            && self.defaults.object(forKey: Keys.manualOnboardingResetRequestedAt) != nil
         guard self.defaults.object(forKey: Keys.onboardingGeneration) != nil,
               self.defaults.bool(forKey: Keys.onboardingCompleted) == false,
-              self.defaults.bool(forKey: Keys.manualOnboardingResetRequested) == false,
+              !hasCurrentManualReset,
               hasExistingInstallSignal
         else { return }
 
         objectWillChange.send()
         self.defaults.set(true, forKey: Keys.onboardingCompleted)
+        self.defaults.set(false, forKey: Keys.manualOnboardingResetRequested)
+        self.defaults.removeObject(forKey: Keys.manualOnboardingResetRequestedAt)
         self.defaults.set(0, forKey: Keys.onboardingCurrentStep)
         self.defaults.set(false, forKey: Keys.onboardingAISkipped)
         self.defaults.set(false, forKey: Keys.onboardingPlaygroundValidated)
@@ -2885,6 +2891,8 @@ final class SettingsStore: ObservableObject {
             fillerWords: self.fillerWords,
             removeFillerWordsEnabled: self.removeFillerWordsEnabled,
             autoConvertPunctuationEnabled: self.autoConvertPunctuationEnabled,
+            punctuationDictionaryPrefix: self.punctuationDictionaryPrefix,
+            punctuationDictionaryRules: self.punctuationDictionaryRules,
             gaavModeEnabled: self.gaavModeEnabled,
             gaavLowercaseFirstLetterEnabled: self.gaavLowercaseFirstLetterEnabled,
             gaavRemoveTrailingPeriodEnabled: self.gaavRemoveTrailingPeriodEnabled,
@@ -2997,6 +3005,12 @@ final class SettingsStore: ObservableObject {
         self.removeFillerWordsEnabled = payload.removeFillerWordsEnabled
         if let autoConvertPunctuationEnabled = payload.autoConvertPunctuationEnabled {
             self.autoConvertPunctuationEnabled = autoConvertPunctuationEnabled
+        }
+        if let punctuationDictionaryPrefix = payload.punctuationDictionaryPrefix {
+            self.punctuationDictionaryPrefix = punctuationDictionaryPrefix
+        }
+        if let punctuationDictionaryRules = payload.punctuationDictionaryRules {
+            self.punctuationDictionaryRules = punctuationDictionaryRules
         }
         let restoredGaavModeEnabled = payload.gaavModeEnabled
         let restoredContinuousDictationModeEnabled = payload.continuousDictationModeEnabled ?? false
@@ -3603,6 +3617,162 @@ final class SettingsStore: ObservableObject {
         set {
             objectWillChange.send()
             self.defaults.set(newValue, forKey: Keys.autoConvertPunctuationEnabled)
+        }
+    }
+
+    static let defaultPunctuationDictionaryPrefix = "literal"
+
+    static let defaultPunctuationDictionaryRules: [PunctuationDictionaryRule] = [
+        PunctuationDictionaryRule(aliases: ["comma"], symbol: ","),
+        PunctuationDictionaryRule(aliases: ["period", "full stop"], symbol: "."),
+        PunctuationDictionaryRule(aliases: ["dot"], symbol: "."),
+        PunctuationDictionaryRule(aliases: ["question mark", "questionmark"], symbol: "?"),
+        PunctuationDictionaryRule(aliases: ["exclamation mark", "exclamation point", "bang"], symbol: "!"),
+        PunctuationDictionaryRule(aliases: ["colon"], symbol: ":"),
+        PunctuationDictionaryRule(aliases: ["semicolon", "semi colon"], symbol: ";"),
+        PunctuationDictionaryRule(aliases: ["ellipsis", "dot dot dot", "three dots"], symbol: "..."),
+        PunctuationDictionaryRule(aliases: ["slash", "forward slash", "forwardslash"], symbol: "/"),
+        PunctuationDictionaryRule(aliases: ["backslash", "back slash"], symbol: "\\"),
+        PunctuationDictionaryRule(aliases: ["hyphen"], symbol: "-"),
+        PunctuationDictionaryRule(aliases: ["dash", "minus sign"], symbol: "-"),
+        PunctuationDictionaryRule(aliases: ["em dash", "long dash"], symbol: "—"),
+        PunctuationDictionaryRule(aliases: ["en dash"], symbol: "–"),
+        PunctuationDictionaryRule(
+            aliases: ["open parenthesis", "open parentheses", "left parenthesis", "left parentheses", "open paren", "left paren"],
+            symbol: "("
+        ),
+        PunctuationDictionaryRule(
+            aliases: ["close parenthesis", "close parentheses", "right parenthesis", "right parentheses", "close paren", "right paren"],
+            symbol: ")"
+        ),
+        PunctuationDictionaryRule(aliases: ["open bracket", "left bracket", "open square bracket", "left square bracket"], symbol: "["),
+        PunctuationDictionaryRule(aliases: ["close bracket", "right bracket", "close square bracket", "right square bracket"], symbol: "]"),
+        PunctuationDictionaryRule(
+            aliases: ["open brace", "left brace", "open curly brace", "left curly brace", "open curly bracket", "left curly bracket"],
+            symbol: "{"
+        ),
+        PunctuationDictionaryRule(
+            aliases: ["close brace", "right brace", "close curly brace", "right curly brace", "close curly bracket", "right curly bracket"],
+            symbol: "}"
+        ),
+        PunctuationDictionaryRule(aliases: ["open angle bracket", "left angle bracket", "less than sign"], symbol: "<"),
+        PunctuationDictionaryRule(aliases: ["close angle bracket", "right angle bracket", "greater than sign"], symbol: ">"),
+        PunctuationDictionaryRule(aliases: ["quote", "quotes", "quotation mark", "double quote"], symbol: "\""),
+        PunctuationDictionaryRule(aliases: ["open quote", "opening quote", "open double quote", "opening double quote"], symbol: "\""),
+        PunctuationDictionaryRule(aliases: ["close quote", "closing quote", "close double quote", "closing double quote"], symbol: "\""),
+        PunctuationDictionaryRule(aliases: ["single quote"], symbol: "'"),
+        PunctuationDictionaryRule(aliases: ["apostrophe"], symbol: "'"),
+        PunctuationDictionaryRule(aliases: ["at the rate", "at sign", "commercial at"], symbol: "@"),
+        PunctuationDictionaryRule(aliases: ["ampersand", "and sign"], symbol: "&"),
+        PunctuationDictionaryRule(aliases: ["plus sign", "plus"], symbol: "+"),
+        PunctuationDictionaryRule(aliases: ["equals sign", "equal sign", "equal", "equals"], symbol: "="),
+        PunctuationDictionaryRule(aliases: ["percent sign", "percentage sign", "percent"], symbol: "%"),
+        PunctuationDictionaryRule(aliases: ["dollar sign", "dollar"], symbol: "$"),
+        PunctuationDictionaryRule(aliases: ["hash", "hash sign", "hashtag", "pound sign", "number sign"], symbol: "#"),
+        PunctuationDictionaryRule(aliases: ["asterisk", "star symbol"], symbol: "*"),
+        PunctuationDictionaryRule(aliases: ["underscore"], symbol: "_"),
+        PunctuationDictionaryRule(aliases: ["pipe", "vertical bar"], symbol: "|"),
+        PunctuationDictionaryRule(aliases: ["tilde"], symbol: "~"),
+        PunctuationDictionaryRule(aliases: ["caret"], symbol: "^"),
+        PunctuationDictionaryRule(aliases: ["backtick", "back tick"], symbol: "`"),
+    ]
+
+    struct PunctuationDictionaryRule: Codable, Identifiable, Hashable {
+        let id: UUID
+        var aliases: [String]
+        var symbol: String
+
+        init(aliases: [String], symbol: String) {
+            self.id = UUID()
+            self.aliases = Self.normalizedAliases(aliases)
+            self.symbol = Self.normalizedSymbol(symbol) ?? symbol
+        }
+
+        init(id: UUID, aliases: [String], symbol: String) {
+            self.id = id
+            self.aliases = Self.normalizedAliases(aliases)
+            self.symbol = Self.normalizedSymbol(symbol) ?? symbol
+        }
+
+        static func normalizedAlias(_ value: String) -> String? {
+            let alias = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return alias.isEmpty ? nil : alias
+        }
+
+        static func normalizedAliases(_ values: [String]) -> [String] {
+            var seen: Set<String> = []
+            var aliases: [String] = []
+            aliases.reserveCapacity(values.count)
+
+            for value in values {
+                guard let alias = self.normalizedAlias(value), !seen.contains(alias) else { continue }
+                seen.insert(alias)
+                aliases.append(alias)
+            }
+
+            return aliases
+        }
+
+        static func normalizedSymbol(_ value: String) -> String? {
+            let symbol = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return symbol.isEmpty ? nil : symbol
+        }
+    }
+
+    static func normalizedPunctuationDictionaryPrefix(_ value: String) -> String? {
+        let prefix = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return prefix.isEmpty ? nil : prefix
+    }
+
+    var punctuationDictionaryPrefix: String {
+        get {
+            guard let stored = self.defaults.string(forKey: Keys.punctuationDictionaryPrefix),
+                  let normalized = Self.normalizedPunctuationDictionaryPrefix(stored)
+            else {
+                return Self.defaultPunctuationDictionaryPrefix
+            }
+            return normalized
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(
+                Self.normalizedPunctuationDictionaryPrefix(newValue) ?? Self.defaultPunctuationDictionaryPrefix,
+                forKey: Keys.punctuationDictionaryPrefix
+            )
+        }
+    }
+
+    var punctuationDictionaryRules: [PunctuationDictionaryRule] {
+        get {
+            guard let data = defaults.data(forKey: Keys.punctuationDictionaryRules),
+                  let decoded = try? JSONDecoder().decode([PunctuationDictionaryRule].self, from: data)
+            else {
+                return Self.defaultPunctuationDictionaryRules
+            }
+            return decoded.compactMap { rule in
+                let aliases = PunctuationDictionaryRule.normalizedAliases(rule.aliases)
+                guard !aliases.isEmpty,
+                      let symbol = PunctuationDictionaryRule.normalizedSymbol(rule.symbol)
+                else {
+                    return nil
+                }
+                return PunctuationDictionaryRule(id: rule.id, aliases: aliases, symbol: symbol)
+            }
+        }
+        set {
+            objectWillChange.send()
+            let normalizedRules = newValue.compactMap { rule -> PunctuationDictionaryRule? in
+                let aliases = PunctuationDictionaryRule.normalizedAliases(rule.aliases)
+                guard !aliases.isEmpty,
+                      let symbol = PunctuationDictionaryRule.normalizedSymbol(rule.symbol)
+                else {
+                    return nil
+                }
+                return PunctuationDictionaryRule(id: rule.id, aliases: aliases, symbol: symbol)
+            }
+            if let encoded = try? JSONEncoder().encode(normalizedRules) {
+                self.defaults.set(encoded, forKey: Keys.punctuationDictionaryRules)
+            }
         }
     }
 
@@ -4503,6 +4673,7 @@ private extension SettingsStore {
         static let onboardingCompleted = "OnboardingCompleted"
         static let onboardingGeneration = "OnboardingGeneration"
         static let manualOnboardingResetRequested = "ManualOnboardingResetRequested"
+        static let manualOnboardingResetRequestedAt = "ManualOnboardingResetRequestedAt"
         static let onboardingCurrentStep = "OnboardingCurrentStep"
         static let onboardingAISkipped = "OnboardingAISkipped"
         static let onboardingPlaygroundValidated = "OnboardingPlaygroundValidated"
@@ -4551,6 +4722,8 @@ private extension SettingsStore {
         static let fillerWords = "FillerWords"
         static let removeFillerWordsEnabled = "RemoveFillerWordsEnabled"
         static let autoConvertPunctuationEnabled = "AutoConvertPunctuationEnabled"
+        static let punctuationDictionaryPrefix = "PunctuationDictionaryPrefix"
+        static let punctuationDictionaryRules = "PunctuationDictionaryRules"
 
         /// GAAV Mode (removes capitalization and trailing punctuation)
         static let gaavModeEnabled = "GAAVModeEnabled"

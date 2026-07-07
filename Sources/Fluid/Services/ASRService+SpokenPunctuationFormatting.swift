@@ -7,9 +7,12 @@ extension ASRService {
         bundleID: String? = nil,
         windowTitle: String? = nil
     ) -> String {
-        guard SettingsStore.shared.autoConvertPunctuationEnabled else { return text }
+        let settings = SettingsStore.shared
+        guard settings.autoConvertPunctuationEnabled else { return text }
         return SpokenPunctuationFormatter.apply(
             text,
+            prefix: settings.punctuationDictionaryPrefix,
+            rules: settings.punctuationDictionaryRules,
             appName: appName,
             bundleID: bundleID,
             windowTitle: windowTitle
@@ -113,13 +116,22 @@ private enum SpokenPunctuationFormatter {
 
     static func apply(
         _ text: String,
+        prefix: String,
+        rules dictionaryRules: [SettingsStore.PunctuationDictionaryRule],
         appName: String? = nil,
         bundleID: String? = nil,
         windowTitle: String? = nil
     ) -> String {
-        guard !text.isEmpty else { return text }
+        guard !text.isEmpty,
+              text.range(of: prefix, options: .caseInsensitive) != nil
+        else { return text }
 
         let context = FormattingContext(appName: appName, bundleID: bundleID, windowTitle: windowTitle)
+        let prefixWords = self.words(in: prefix)
+        let phraseRules = self.makeRules(from: dictionaryRules)
+        guard !prefixWords.isEmpty, !phraseRules.isEmpty else { return text }
+
+        let rulesByFirstWord = self.groupedRulesByFirstWord(for: phraseRules)
         let tokens = self.tokenize(text)
         guard tokens.contains(where: { $0.normalizedWord != nil }) else {
             return text
@@ -128,7 +140,13 @@ private enum SpokenPunctuationFormatter {
         var output: [OutputPart] = []
         var index = 0
         while index < tokens.count {
-            if let match = self.matchRule(in: tokens, at: index, context: context) {
+            if let match = self.matchPrefixedRule(
+                in: tokens,
+                at: index,
+                prefixWords: prefixWords,
+                rulesByFirstWord: rulesByFirstWord,
+                context: context
+            ) {
                 output.append(.punctuation(symbol: match.rule.symbol, spacing: match.rule.spacing))
                 index = match.endIndex
             } else if let text = tokens[index].text {
@@ -140,6 +158,62 @@ private enum SpokenPunctuationFormatter {
         }
 
         return self.render(self.removingGeneratedCommaNoise(from: output))
+    }
+
+    private static func groupedRulesByFirstWord(for rules: [PhraseRule]) -> [String: [PhraseRule]] {
+        let grouped = Dictionary(grouping: rules) { $0.words.first ?? "" }
+        return grouped.mapValues {
+            $0.sorted {
+                if $0.words.count != $1.words.count { return $0.words.count > $1.words.count }
+                return $0.words.joined(separator: " ").count > $1.words.joined(separator: " ").count
+            }
+        }
+    }
+
+    private static func makeRules(from dictionaryRules: [SettingsStore.PunctuationDictionaryRule]) -> [PhraseRule] {
+        dictionaryRules.flatMap { rule in
+            self.rules(
+                symbol: rule.symbol,
+                spacing: self.spacing(for: rule),
+                phrases: rule.aliases
+            )
+        }
+    }
+
+    private static func spacing(for rule: SettingsStore.PunctuationDictionaryRule) -> Spacing {
+        let aliases = Set(rule.aliases)
+
+        switch rule.symbol {
+        case ".":
+            return aliases.contains("dot") ? .noSpaceAround : .rightAttached
+        case ",", "?", "!", ":", ";", "...", ")", "]", "}", ">", "%":
+            return .rightAttached
+        case "(", "[", "{", "<", "$":
+            return .leftAttached
+        case "+", "=", "&", "—", "–":
+            return .spaceAround
+        case "-":
+            return aliases.contains("dash") || aliases.contains("minus sign") ? .spaceAround : .noSpaceAround
+        case "\"":
+            if aliases.contains(where: { $0.hasPrefix("open ") || $0.hasPrefix("opening ") }) {
+                return .leftAttached
+            }
+            if aliases.contains(where: { $0.hasPrefix("close ") || $0.hasPrefix("closing ") }) {
+                return .rightAttached
+            }
+            return .toggleDoubleQuote
+        case "'":
+            return aliases.contains("apostrophe") ? .noSpaceAround : .toggleSingleQuote
+        default:
+            return .noSpaceAround
+        }
+    }
+
+    private static func words(in phrase: String) -> [String] {
+        phrase
+            .split(whereSeparator: \.isWhitespace)
+            .map { String($0).lowercased() }
+            .filter { !$0.isEmpty }
     }
 
     private static func makeRules() -> [PhraseRule] {
@@ -424,13 +498,65 @@ private enum SpokenPunctuationFormatter {
         return tokens
     }
 
+    private static func matchPrefixedRule(
+        in tokens: [Token],
+        at index: Int,
+        prefixWords: [String],
+        rulesByFirstWord: [String: [PhraseRule]],
+        context: FormattingContext
+    ) -> (rule: PhraseRule, endIndex: Int)? {
+        guard let aliasIndex = self.indexAfterPrefix(prefixWords, in: tokens, at: index) else {
+            return nil
+        }
+        return self.matchRule(
+            in: tokens,
+            at: aliasIndex,
+            rulesByFirstWord: rulesByFirstWord,
+            context: context
+        )
+    }
+
+    private static func indexAfterPrefix(
+        _ prefixWords: [String],
+        in tokens: [Token],
+        at index: Int
+    ) -> Int? {
+        guard !prefixWords.isEmpty else { return nil }
+
+        var cursor = index
+        for (wordIndex, prefixWord) in prefixWords.enumerated() {
+            if wordIndex > 0 {
+                guard cursor < tokens.count, tokens[cursor].isHorizontalWhitespaceText else {
+                    return nil
+                }
+                while cursor < tokens.count, tokens[cursor].isHorizontalWhitespaceText {
+                    cursor += 1
+                }
+            }
+
+            guard cursor < tokens.count, tokens[cursor].normalizedWord == prefixWord else {
+                return nil
+            }
+            cursor += 1
+        }
+
+        guard cursor < tokens.count, tokens[cursor].isHorizontalWhitespaceText else {
+            return nil
+        }
+        while cursor < tokens.count, tokens[cursor].isHorizontalWhitespaceText {
+            cursor += 1
+        }
+        return cursor < tokens.count ? cursor : nil
+    }
+
     private static func matchRule(
         in tokens: [Token],
         at index: Int,
+        rulesByFirstWord: [String: [PhraseRule]],
         context: FormattingContext
     ) -> (rule: PhraseRule, endIndex: Int)? {
         guard let firstWord = tokens[index].normalizedWord,
-              let candidates = self.rulesByFirstWord[firstWord]
+              let candidates = rulesByFirstWord[firstWord]
         else {
             return nil
         }

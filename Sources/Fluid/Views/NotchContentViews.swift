@@ -10,6 +10,137 @@ import Combine
 import QuartzCore
 import SwiftUI
 
+struct DictationAIDiffSegment: Equatable {
+    enum Kind: Equatable {
+        case unchanged
+        case inserted
+        case removed
+    }
+
+    var text: String
+    var kind: Kind
+}
+
+private enum DictationAIDiffBuilder {
+    private struct WordToken: Equatable {
+        let text: String
+        let normalized: String
+    }
+
+    private static let maximumDiffWordCount = 180
+    private static let punctuation = CharacterSet.punctuationCharacters
+
+    static func segments(originalText: String, processedText: String) -> [DictationAIDiffSegment] {
+        let originalWords = self.wordTokens(in: originalText)
+        let processedWords = self.wordTokens(in: processedText)
+
+        guard !processedWords.isEmpty else {
+            return self.render(words: originalWords, kind: .removed)
+        }
+
+        guard !originalWords.isEmpty else {
+            return self.render(words: processedWords, kind: .inserted)
+        }
+
+        guard originalWords.count <= self.maximumDiffWordCount,
+              processedWords.count <= self.maximumDiffWordCount
+        else {
+            return [DictationAIDiffSegment(text: processedText, kind: .unchanged)]
+        }
+
+        let table = self.lcsTable(originalWords: originalWords, processedWords: processedWords)
+        let columns = processedWords.count + 1
+        var merged: [DictationAIDiffSegment] = []
+        var rendered: [(String, DictationAIDiffSegment.Kind)] = []
+        var sourceIndex = 0
+        var targetIndex = 0
+
+        while sourceIndex < originalWords.count || targetIndex < processedWords.count {
+            if sourceIndex < originalWords.count,
+               targetIndex < processedWords.count,
+               originalWords[sourceIndex].normalized == processedWords[targetIndex].normalized
+            {
+                rendered.append((processedWords[targetIndex].text, .unchanged))
+                sourceIndex += 1
+                targetIndex += 1
+            } else if sourceIndex < originalWords.count,
+                      targetIndex == processedWords.count ||
+                      table[(sourceIndex + 1) * columns + targetIndex] >= table[sourceIndex * columns + targetIndex + 1]
+            {
+                rendered.append((originalWords[sourceIndex].text, .removed))
+                sourceIndex += 1
+            } else if targetIndex < processedWords.count {
+                rendered.append((processedWords[targetIndex].text, .inserted))
+                targetIndex += 1
+            }
+        }
+
+        for index in rendered.indices {
+            let suffix = index == rendered.count - 1 ? "" : " "
+            self.appendSegment(
+                text: rendered[index].0 + suffix,
+                kind: rendered[index].1,
+                to: &merged
+            )
+        }
+
+        return merged
+    }
+
+    private static func wordTokens(in text: String) -> [WordToken] {
+        text
+            .split { $0.isWhitespace }
+            .compactMap { part in
+                let raw = String(part)
+                let normalized = raw
+                    .trimmingCharacters(in: self.punctuation)
+                    .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                guard !raw.isEmpty else { return nil }
+                return WordToken(text: raw, normalized: normalized.isEmpty ? raw.lowercased() : normalized)
+            }
+    }
+
+    private static func lcsTable(originalWords: [WordToken], processedWords: [WordToken]) -> [Int] {
+        let columns = processedWords.count + 1
+        var table = Array(repeating: 0, count: (originalWords.count + 1) * columns)
+
+        for sourceIndex in stride(from: originalWords.count - 1, through: 0, by: -1) {
+            for targetIndex in stride(from: processedWords.count - 1, through: 0, by: -1) {
+                let index = sourceIndex * columns + targetIndex
+                if originalWords[sourceIndex].normalized == processedWords[targetIndex].normalized {
+                    table[index] = table[(sourceIndex + 1) * columns + targetIndex + 1] + 1
+                } else {
+                    table[index] = max(
+                        table[(sourceIndex + 1) * columns + targetIndex],
+                        table[sourceIndex * columns + targetIndex + 1]
+                    )
+                }
+            }
+        }
+
+        return table
+    }
+
+    private static func render(words: [WordToken], kind: DictationAIDiffSegment.Kind) -> [DictationAIDiffSegment] {
+        let text = words.map(\.text).joined(separator: " ")
+        guard !text.isEmpty else { return [] }
+        return [DictationAIDiffSegment(text: text, kind: kind)]
+    }
+
+    private static func appendSegment(
+        text: String,
+        kind: DictationAIDiffSegment.Kind,
+        to segments: inout [DictationAIDiffSegment]
+    ) {
+        guard !text.isEmpty else { return }
+        if let last = segments.indices.last, segments[last].kind == kind {
+            segments[last].text += text
+        } else {
+            segments.append(DictationAIDiffSegment(text: text, kind: kind))
+        }
+    }
+}
+
 // MARK: - Observable state for notch content (Singleton)
 
 @MainActor
@@ -40,6 +171,7 @@ class NotchContentState: ObservableObject {
 
     /// Cached transcription preview text to avoid recomputing on every render
     @Published private(set) var cachedPreviewText: String = ""
+    @Published private(set) var dictationAIDiffPreviewSegments: [DictationAIDiffSegment] = []
 
     // MARK: - Expanded Command Output State
 
@@ -92,6 +224,8 @@ class NotchContentState: ObservableObject {
     func setProcessing(_ processing: Bool) {
         if processing {
             self.clearAIProcessingFailure()
+        } else {
+            self.clearDictationAIDiffPreview()
         }
         self.isProcessing = processing
     }
@@ -104,12 +238,29 @@ class NotchContentState: ObservableObject {
         self.isAIProcessingFailureVisible = false
     }
 
+    func updateDictationAIDiffPreview(originalText: String, processedText: String) {
+        let segments = DictationAIDiffBuilder.segments(
+            originalText: originalText,
+            processedText: processedText
+        )
+        guard segments != self.dictationAIDiffPreviewSegments else { return }
+        self.dictationAIDiffPreviewSegments = segments
+    }
+
+    func clearDictationAIDiffPreview() {
+        guard !self.dictationAIDiffPreviewSegments.isEmpty else { return }
+        self.dictationAIDiffPreviewSegments = []
+    }
+
     /// Update transcription and recompute cached lines
     func updateTranscription(_ text: String) {
         let boundedText = Self.tailCharacters(in: text, maxCharacters: Self.maxStoredTranscriptionCharacters)
         guard boundedText != self.transcriptionText else { return }
 
         self.transcriptionText = boundedText
+        if boundedText.isEmpty {
+            self.clearDictationAIDiffPreview()
+        }
         self.recomputeTranscriptionLines()
     }
 
