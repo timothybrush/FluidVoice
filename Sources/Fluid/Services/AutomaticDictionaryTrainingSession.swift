@@ -29,6 +29,7 @@ final class AutomaticDictionaryTrainingSession: ObservableObject {
     @Published private(set) var statusMessage = ""
     @Published private(set) var hasError = false
     @Published private(set) var successTitle = "Added to Dictionary"
+    @Published private(set) var isAutomaticCaptureEnabled = false
 
     var onInteraction: (() -> Void)?
     var onSuccess: (() -> Void)?
@@ -77,27 +78,31 @@ final class AutomaticDictionaryTrainingSession: ObservableObject {
     }
 
     var canSave: Bool {
-        !self.variants.isEmpty && self.capturePhase == .idle
+        self.isReady && !self.variants.isEmpty && self.capturePhase == .idle
     }
 
     var canUseRecordButton: Bool {
-        switch self.capturePhase {
-        case .starting:
-            return !self.stopRequestedDuringStart
-        case .recording:
+        if self.isAutomaticCaptureEnabled {
             return true
-        case .processing:
+        }
+        switch self.capturePhase {
+        case .starting, .recording, .processing:
             return false
         case .idle:
-            return !self.asr.isRunning && self.sampleCount < CustomDictionaryTrainingMerge.maxSamples
+            return !self.asr.isRunning && (
+                self.sampleCount < CustomDictionaryTrainingMerge.maxSamples || !self.isReady
+            )
         }
     }
 
     var recordButtonIsStop: Bool {
-        self.capturePhase == .starting || self.capturePhase == .recording
+        self.isAutomaticCaptureEnabled || self.capturePhase == .starting || self.capturePhase == .recording
     }
 
     var recordButtonTitle: String {
+        if self.isAutomaticCaptureEnabled {
+            return "Stop"
+        }
         switch self.capturePhase {
         case .starting:
             return self.stopRequestedDuringStart ? "Stopping..." : "Stop"
@@ -106,7 +111,9 @@ final class AutomaticDictionaryTrainingSession: ObservableObject {
         case .processing:
             return "Checking..."
         case .idle:
-            return "Record"
+            return self.sampleCount >= CustomDictionaryTrainingMerge.maxSamples && !self.isReady
+                ? "Try Again"
+                : "Start"
         }
     }
 
@@ -119,12 +126,12 @@ final class AutomaticDictionaryTrainingSession: ObservableObject {
 
     var trainingDetail: String {
         if self.isReady {
-            return "You can add it now, or keep trying."
+            return "FluidVoice got it right 3 times. Add it now, or keep training."
         }
         if self.sampleCount >= CustomDictionaryTrainingMerge.maxSamples {
-            return "Maximum samples reached. Add the replacement when ready."
+            return "Not quite there yet. Try another round when you're ready."
         }
-        return "Keep going until FluidVoice understands you 3 times in a row."
+        return "Start once and keep saying it. Each pause checks a try, then FluidVoice listens again until it gets it right 3 times."
     }
 
     func beginTraining() {
@@ -139,18 +146,26 @@ final class AutomaticDictionaryTrainingSession: ObservableObject {
     func returnToChoice() {
         guard self.screen == .training, self.capturePhase == .idle else { return }
         self.onInteraction?()
+        self.isAutomaticCaptureEnabled = false
         self.screen = .choice
     }
 
     func toggleCapture() {
         self.onInteraction?()
-        switch self.capturePhase {
-        case .idle:
+        if self.isAutomaticCaptureEnabled {
+            self.isAutomaticCaptureEnabled = false
+            switch self.capturePhase {
+            case .starting, .recording:
+                Task { await self.stopCapture() }
+            case .idle, .processing:
+                break
+            }
+        } else if self.capturePhase == .idle {
+            if self.sampleCount >= CustomDictionaryTrainingMerge.maxSamples, !self.isReady {
+                self.resetVerificationAttempts()
+            }
+            self.isAutomaticCaptureEnabled = true
             Task { await self.startCapture() }
-        case .starting, .recording:
-            Task { await self.stopCapture() }
-        case .processing:
-            break
         }
     }
 
@@ -173,6 +188,7 @@ final class AutomaticDictionaryTrainingSession: ObservableObject {
     func cancel() {
         self.isCancelled = true
         self.discardCurrentCapture = true
+        self.isAutomaticCaptureEnabled = false
         DictionaryTrainingEndpointMonitor.shared.stop()
         switch self.capturePhase {
         case .starting:
@@ -186,10 +202,12 @@ final class AutomaticDictionaryTrainingSession: ObservableObject {
     }
 
     private func startCapture() async {
-        guard self.capturePhase == .idle,
+        guard self.isAutomaticCaptureEnabled,
+              self.capturePhase == .idle,
               !self.asr.isRunning,
               self.sampleCount < CustomDictionaryTrainingMerge.maxSamples
         else {
+            self.isAutomaticCaptureEnabled = false
             return
         }
 
@@ -215,6 +233,7 @@ final class AutomaticDictionaryTrainingSession: ObservableObject {
         guard self.asr.isRunning else {
             self.capturePhase = .idle
             self.stopRequestedDuringStart = false
+            self.isAutomaticCaptureEnabled = false
             guard !self.didStartAudioCapture else { return }
             guard !self.isCancelled else { return }
             self.hasError = true
@@ -250,7 +269,11 @@ final class AutomaticDictionaryTrainingSession: ObservableObject {
     }
 
     private func handleAutomaticSpeechEnd() {
-        guard self.capturePhase == .starting || self.capturePhase == .recording else { return }
+        guard self.isAutomaticCaptureEnabled,
+              self.capturePhase == .starting || self.capturePhase == .recording
+        else {
+            return
+        }
         self.statusMessage = "Stopping..."
         self.stopTask?.cancel()
         self.stopTask = Task { await self.stopCapture() }
@@ -270,6 +293,30 @@ final class AutomaticDictionaryTrainingSession: ObservableObject {
         self.discardCurrentCapture = false
         guard !shouldDiscard else { return }
         self.addTrainingVariant(from: transcript)
+        await self.continueAutomaticCaptureIfNeeded()
+    }
+
+    private func continueAutomaticCaptureIfNeeded() async {
+        guard self.isAutomaticCaptureEnabled,
+              !self.isReady,
+              self.sampleCount < CustomDictionaryTrainingMerge.maxSamples,
+              !self.isCancelled
+        else {
+            self.isAutomaticCaptureEnabled = false
+            return
+        }
+
+        await Task.yield()
+        await self.startCapture()
+    }
+
+    private func resetVerificationAttempts() {
+        self.sampleCount = 0
+        self.lastOutput = ""
+        self.lastOutputIsCovered = false
+        self.consecutiveCoveredCaptures = 0
+        self.statusMessage = ""
+        self.hasError = false
     }
 
     private func addTrainingVariant(from transcript: String) {

@@ -202,6 +202,7 @@ final class DictionaryCorrectionOverlayController {
 
 private struct AutomaticDictionaryCorrectionOverlayView: View {
     @ObservedObject var session: AutomaticDictionaryTrainingSession
+    @ObservedObject private var settings = SettingsStore.shared
 
     let displayDuration: TimeInterval
     let onDismiss: () -> Void
@@ -210,7 +211,7 @@ private struct AutomaticDictionaryCorrectionOverlayView: View {
     @State private var isDismissHovered = false
     @State private var progress: CGFloat = 1
 
-    private var accent: Color { SettingsStore.shared.accentColor }
+    private var accent: Color { self.settings.accentColor }
 
     var body: some View {
         Group {
@@ -435,7 +436,7 @@ private struct AutomaticDictionaryCorrectionOverlayView: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.white.opacity(0.1))
                     Capsule()
-                        .fill(self.session.isReady ? Color.green.opacity(0.9) : self.accent)
+                        .fill(self.accent)
                         .frame(width: proxy.size.width * CGFloat(self.session.readinessFraction))
                 }
             }
@@ -472,7 +473,7 @@ private struct AutomaticDictionaryCorrectionOverlayView: View {
             if self.session.isReady {
                 Label("Ready", systemImage: "checkmark.circle.fill")
                     .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(Color.green.opacity(0.9))
+                    .foregroundStyle(self.accent)
             }
         }
         .padding(.horizontal, 10)
@@ -550,7 +551,13 @@ private struct CorrectionOverlayActionButton: View {
     var isReady = false
     let action: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
+    @State private var isGlowExpanded = false
+
+    private var shouldPulse: Bool {
+        self.isReady && self.isEnabled && !self.isHovered && !self.reduceMotion
+    }
 
     var body: some View {
         Button(action: self.action) {
@@ -564,6 +571,10 @@ private struct CorrectionOverlayActionButton: View {
         .buttonStyle(.plain)
         .disabled(!self.isEnabled)
         .onHover { self.isHovered = $0 }
+        .onAppear { self.updateGlow() }
+        .onChange(of: self.shouldPulse) { _, _ in
+            self.updateGlow()
+        }
     }
 
     private var background: some View {
@@ -573,27 +584,51 @@ private struct CorrectionOverlayActionButton: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .strokeBorder(self.borderColor, lineWidth: self.isReady ? 1.5 : 1)
             )
-            .shadow(color: self.isReady ? Color.green.opacity(0.2) : .clear, radius: 10, y: 3)
+            .shadow(
+                color: self.isReady ? self.accent.opacity(self.isGlowExpanded ? 0.34 : 0.14) : .clear,
+                radius: self.isReady ? (self.isGlowExpanded ? 16 : 7) : 0,
+                y: 3
+            )
     }
 
     private var fillColor: Color {
+        guard self.isEnabled else {
+            return Color.white.opacity(0.045)
+        }
         switch self.style {
         case .accent:
-            return self.accent.opacity(self.isEnabled ? (self.isHovered ? 1 : 0.9) : 0.25)
+            return self.accent.opacity(self.isHovered ? 1 : 0.9)
         case .secondary:
             return Color.white.opacity(self.isHovered ? 0.1 : 0.045)
         }
     }
 
     private var borderColor: Color {
+        guard self.isEnabled else {
+            return Color.white.opacity(0.1)
+        }
         if self.isReady {
-            return Color.green.opacity(0.75)
+            return self.accent.opacity(0.78)
         }
         switch self.style {
         case .accent:
             return Color.white.opacity(self.isEnabled ? 0.18 : 0.06)
         case .secondary:
             return Color.white.opacity(self.isHovered ? 0.28 : 0.16)
+        }
+    }
+
+    private func updateGlow() {
+        guard self.shouldPulse else {
+            withAnimation(.easeOut(duration: 0.16)) {
+                self.isGlowExpanded = false
+            }
+            return
+        }
+
+        self.isGlowExpanded = false
+        withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+            self.isGlowExpanded = true
         }
     }
 }

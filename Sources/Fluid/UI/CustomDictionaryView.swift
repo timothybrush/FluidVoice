@@ -44,6 +44,9 @@ struct CustomDictionaryView: View {
     @State private var isTrainingRecording = false
     @State private var trainingStopRequestedDuringStart = false
     @State private var isTrainingProcessing = false
+    @State private var isAutomaticTrainingEnabled = false
+    @State private var isTrainedReplacementButtonHovered = false
+    @State private var isTrainedReplacementGlowExpanded = false
     @State private var replacementConfirmation: ReplacementConfirmation?
     @State private var composerMode: DictionaryComposerMode = .train
     @State private var manualTriggerDraft = ""
@@ -76,8 +79,22 @@ struct CustomDictionaryView: View {
     }
 
     private var canUseTrainingRecorderButton: Bool {
+        if self.isAutomaticTrainingEnabled {
+            return true
+        }
         guard !self.trainingStopRequestedDuringStart, !self.isTrainingProcessing else { return false }
-        return self.isTrainingRecording || self.canRecordTrainingSample
+        return self.isTrainingRecording || self.canRecordTrainingSample || self.canRetryTrainingAfterMaximum
+    }
+
+    private var trainingRecorderIsStop: Bool {
+        self.isAutomaticTrainingEnabled || self.isTrainingRecording || self.isTrainingStarting
+    }
+
+    private var trainingRecorderButtonTitle: String {
+        if self.trainingRecorderIsStop {
+            return "Stop"
+        }
+        return self.canRetryTrainingAfterMaximum ? "Try Again" : "Start"
     }
 
     private var trainingRecorderTitle: String {
@@ -93,16 +110,26 @@ struct CustomDictionaryView: View {
         if self.isTrainingRecording {
             return "Listening..."
         }
-        if self.normalizedTrainingReplacement.isEmpty {
-            return "Record sample"
+        if self.trainingFinalOutputIsReady {
+            return "Ready to add"
         }
-        return self.trainingVariants.isEmpty ? "Say it once" : "Say it again"
+        if self.normalizedTrainingReplacement.isEmpty {
+            return "Start training"
+        }
+        return self.trainingSampleCount == 0 ? "Start once" : "Keep going"
     }
 
     private var trainingRecorderDetail: String {
-        self.normalizedTrainingReplacement.isEmpty
-            ? "Type the correct text first."
-            : "Keep trying until FluidVoice understands you 3 times in a row."
+        if self.normalizedTrainingReplacement.isEmpty {
+            return "Type the correct text first."
+        }
+        if self.trainingFinalOutputIsReady {
+            return "FluidVoice got it right 3 times. Add the replacement, or keep training."
+        }
+        if self.canRetryTrainingAfterMaximum {
+            return "Not quite there yet. Try another round when you're ready."
+        }
+        return "Start once and keep saying it. Each pause checks a try, then FluidVoice listens again until it gets it right 3 times."
     }
 
     private var trainingRecorderStatusText: String {
@@ -167,12 +194,6 @@ struct CustomDictionaryView: View {
         return self.trainingOutputIsCovered ? self.normalizedTrainingReplacement : self.lastTrainingOutput
     }
 
-    private var canStartTraining: Bool {
-        !self.normalizedTrainingReplacement.isEmpty &&
-            !self.isTrainingRecording &&
-            !self.isTrainingProcessing
-    }
-
     private var canRecordTrainingSample: Bool {
         !self.normalizedTrainingReplacement.isEmpty &&
             !self.isTrainingProcessing &&
@@ -180,11 +201,22 @@ struct CustomDictionaryView: View {
             self.trainingSampleCount < CustomDictionaryTrainingMerge.maxSamples
     }
 
+    private var canRetryTrainingAfterMaximum: Bool {
+        !self.normalizedTrainingReplacement.isEmpty &&
+            !self.trainingFinalOutputIsReady &&
+            !self.trainingAlreadyCorrectWithoutReplacement &&
+            !self.isTrainingRecording &&
+            !self.isTrainingProcessing &&
+            !self.asr.isRunning &&
+            self.trainingSampleCount >= CustomDictionaryTrainingMerge.maxSamples
+    }
+
     private var canAddTrainedReplacement: Bool {
         !self.normalizedTrainingReplacement.isEmpty &&
             !self.trainingVariants.isEmpty &&
             !self.isTrainingRecording &&
-            !self.isTrainingProcessing
+            !self.isTrainingProcessing &&
+            self.trainingFinalOutputIsReady
     }
 
     private var trainedReplacementButtonTitle: String {
@@ -193,6 +225,12 @@ struct CustomDictionaryView: View {
 
     private var shouldEmphasizeTrainedReplacementButton: Bool {
         self.trainingFinalOutputIsReady && self.canAddTrainedReplacement
+    }
+
+    private var shouldPulseTrainedReplacementButton: Bool {
+        self.shouldEmphasizeTrainedReplacementButton &&
+            !self.isTrainedReplacementButtonHovered &&
+            !self.reduceMotion
     }
 
     private var manualTriggers: [String] {
@@ -300,6 +338,8 @@ struct CustomDictionaryView: View {
             self.entries = SettingsStore.shared.customDictionaryEntries
         }
         .onDisappear {
+            self.isAutomaticTrainingEnabled = false
+            DictionaryTrainingEndpointMonitor.shared.stop()
             guard self.isTrainingRecording else { return }
             Task { @MainActor in
                 await self.stopTrainingSample()
@@ -501,18 +541,28 @@ struct CustomDictionaryView: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: 38)
             }
-            .fluidButton(.accent, size: .small)
+            .fluidButton(self.shouldEmphasizeTrainedReplacementButton ? .accent : .compact, size: .small)
             .disabled(!self.canAddTrainedReplacement)
-            .opacity(self.canAddTrainedReplacement ? 1 : 0.45)
+            .opacity(self.canAddTrainedReplacement ? 1 : 0.62)
             .overlay(self.trainedReplacementButtonReadyOutline)
             .shadow(
-                color: self.shouldEmphasizeTrainedReplacementButton ? self.theme.palette.success.opacity(0.18) : .clear,
-                radius: self.shouldEmphasizeTrainedReplacementButton ? 14 : 0,
+                color: self.shouldEmphasizeTrainedReplacementButton
+                    ? self.theme.palette.accent.opacity(self.isTrainedReplacementGlowExpanded ? 0.34 : 0.14)
+                    : .clear,
+                radius: self.shouldEmphasizeTrainedReplacementButton
+                    ? (self.isTrainedReplacementGlowExpanded ? 18 : 8)
+                    : 0,
                 x: 0,
-                y: 5
+                y: 4
             )
-            .scaleEffect(self.shouldEmphasizeTrainedReplacementButton ? 1.006 : 1)
-            .animation(.spring(response: 0.28, dampingFraction: 0.72), value: self.shouldEmphasizeTrainedReplacementButton)
+            .onHover { self.isTrainedReplacementButtonHovered = $0 }
+            .onAppear { self.updateTrainedReplacementGlow() }
+            .onChange(of: self.shouldPulseTrainedReplacementButton) { _, _ in
+                self.updateTrainedReplacementGlow()
+            }
+        }
+        .task {
+            await DictionaryTrainingEndpointMonitor.shared.prepare()
         }
     }
 
@@ -656,17 +706,14 @@ struct CustomDictionaryView: View {
             Spacer()
 
             Button {
-                Task {
-                    if self.isTrainingRecording {
-                        await self.stopTrainingSample()
-                    } else {
-                        await self.startTrainingSample()
-                    }
-                }
+                Task { await self.toggleAutomaticTraining() }
             } label: {
-                Label(self.isTrainingRecording ? "Stop" : "Record", systemImage: self.isTrainingRecording ? "stop.fill" : "mic.fill")
+                Label(
+                    self.trainingRecorderButtonTitle,
+                    systemImage: self.trainingRecorderIsStop ? "stop.fill" : "mic.fill"
+                )
             }
-            .fluidButton(self.isTrainingRecording ? .destructive : .accent, size: .small)
+            .fluidButton(self.trainingRecorderIsStop ? .destructive : .accent, size: .small)
             .disabled(!self.canUseTrainingRecorderButton)
             .opacity(self.canUseTrainingRecorderButton ? 1 : 0.45)
         }
@@ -1579,6 +1626,20 @@ struct CustomDictionaryView: View {
         NotificationCenter.default.post(name: .parakeetVocabularyDidChange, object: nil)
     }
 
+    private func updateTrainedReplacementGlow() {
+        guard self.shouldPulseTrainedReplacementButton else {
+            withAnimation(.easeOut(duration: 0.16)) {
+                self.isTrainedReplacementGlowExpanded = false
+            }
+            return
+        }
+
+        self.isTrainedReplacementGlowExpanded = false
+        withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+            self.isTrainedReplacementGlowExpanded = true
+        }
+    }
+
     private func addReplacementEntry(_ entry: SettingsStore.CustomDictionaryEntry) {
         self.entries.insert(entry, at: 0)
         self.saveEntries()
@@ -1770,16 +1831,28 @@ struct CustomDictionaryView: View {
         self.isBoostWordEditorPresented = false
     }
 
-    private func beginTrainingReplacement() {
-        guard self.canStartTraining else { return }
-        self.isTrainingActive = true
-        self.trainingHasError = false
-        self.trainingStatusMessage = ""
-        Task { await DictionaryTrainingEndpointMonitor.shared.prepare() }
+    private func toggleAutomaticTraining() async {
+        if self.isAutomaticTrainingEnabled {
+            self.isAutomaticTrainingEnabled = false
+            if self.isTrainingRecording {
+                await self.stopTrainingSample()
+            }
+            return
+        }
+
+        if self.canRetryTrainingAfterMaximum {
+            self.resetTrainingVerificationAttempts()
+        }
+        guard self.canRecordTrainingSample else { return }
+        self.isAutomaticTrainingEnabled = true
+        await self.startTrainingSample()
     }
 
     private func startTrainingSample() async {
-        guard self.canRecordTrainingSample else { return }
+        guard self.isAutomaticTrainingEnabled, self.canRecordTrainingSample else {
+            self.isAutomaticTrainingEnabled = false
+            return
+        }
         self.isTrainingActive = true
         self.trainingHasError = false
         self.trainingStatusMessage = ""
@@ -1792,6 +1865,7 @@ struct CustomDictionaryView: View {
         if !self.asr.isRunning {
             self.isTrainingRecording = false
             self.trainingStopRequestedDuringStart = false
+            self.isAutomaticTrainingEnabled = false
             self.trainingHasError = true
             self.trainingStatusMessage = "Couldn't start recording. Check microphone access and try again."
             return
@@ -1822,7 +1896,7 @@ struct CustomDictionaryView: View {
     }
 
     private func handleAutomaticTrainingSpeechEnd() {
-        guard self.isTrainingRecording else { return }
+        guard self.isAutomaticTrainingEnabled, self.isTrainingRecording else { return }
         Task { await self.stopTrainingSample() }
     }
 
@@ -1839,6 +1913,30 @@ struct CustomDictionaryView: View {
         let transcript = await self.asr.stop(forDictionaryTraining: true)
         self.isTrainingProcessing = false
         self.addTrainingVariant(from: transcript)
+        await self.continueAutomaticTrainingIfNeeded()
+    }
+
+    private func continueAutomaticTrainingIfNeeded() async {
+        guard self.isAutomaticTrainingEnabled,
+              !self.trainingFinalOutputIsReady,
+              !self.trainingAlreadyCorrectWithoutReplacement,
+              self.trainingSampleCount < CustomDictionaryTrainingMerge.maxSamples
+        else {
+            self.isAutomaticTrainingEnabled = false
+            return
+        }
+
+        await Task.yield()
+        await self.startTrainingSample()
+    }
+
+    private func resetTrainingVerificationAttempts() {
+        self.trainingSampleCount = 0
+        self.lastTrainingOutput = ""
+        self.lastTrainingOutputIsCovered = false
+        self.consecutiveCoveredCaptures = 0
+        self.trainingStatusMessage = ""
+        self.trainingHasError = false
     }
 
     private func addTrainingVariant(from transcript: String) {
@@ -1949,6 +2047,8 @@ struct CustomDictionaryView: View {
     }
 
     private func resetTraining(statusMessage: String = "Type the correct text.") {
+        self.isAutomaticTrainingEnabled = false
+        DictionaryTrainingEndpointMonitor.shared.stop()
         self.trainingReplacement = ""
         self.trainingVariants = []
         self.trainingSampleCount = 0
