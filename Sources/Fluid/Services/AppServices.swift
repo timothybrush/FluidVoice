@@ -113,4 +113,11 @@ final class AppServices: ObservableObject {
 
         DebugLogger.shared.info("✅ All services initialized", source: "AppServices")
     }
+
+    func shutdownForTermination() async {
+        if let asr = self._asr {
+            await asr.shutdownForTermination()
+            self._asr = nil
+        }
+    }
 }

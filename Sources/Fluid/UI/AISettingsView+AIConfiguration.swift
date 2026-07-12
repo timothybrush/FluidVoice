@@ -685,6 +685,8 @@ extension AIEnhancementSettingsView {
                 }
             }
 
+            self.privateAIBackendRow(isBusy: isBusy)
+
             if isDownloading || isLoading || isLoaded || hasLoadFailure || isVerified || !isInstalled {
                 self.privateAIModelStatusRow(
                     status: status,
@@ -695,7 +697,9 @@ extension AIEnhancementSettingsView {
             }
 
             self.privateAIPrefixCacheRow(isBusy: isBusy)
-            self.privateAIBoostRow(isBusy: isBusy)
+            if self.privateAIShowsBoostRow {
+                self.privateAIBoostRow(isBusy: isBusy)
+            }
 
             if self.viewModel.connectionStatus(for: PrivateAIProviderFeature.shared.providerID) == .failed,
                !self.viewModel.connectionErrorMessage.isEmpty
@@ -724,8 +728,12 @@ extension AIEnhancementSettingsView {
                                     .controlSize(.mini)
                                     .fixedSize()
                             }
-                            Text(isDownloading ? Self.downloadButtonText(progress: downloadProgress) : "Download & Verify")
-                                .font(.system(size: 11, weight: .semibold))
+                            Text(
+                                isDownloading
+                                    ? Self.downloadButtonText(progress: downloadProgress)
+                                    : "Download \(self.privateAIBackendShortName) & Verify"
+                            )
+                            .font(.system(size: 11, weight: .semibold))
                         }
                     }
                     .fluidButton(.accent, size: .small)
@@ -772,6 +780,51 @@ extension AIEnhancementSettingsView {
                 .accessibilityLabel("Faster first result")
 
             Spacer(minLength: 0)
+        }
+    }
+
+    private func privateAIBackendRow(isBusy: Bool) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text("Backend")
+                .font(.caption)
+                .frame(width: 124, alignment: .leading)
+
+            self.privateAIBackendPicker(isBusy: isBusy)
+                .frame(width: 190)
+
+            Text(self.settings.privateAIBackendPreference.detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func privateAIBackendPicker(isBusy: Bool) -> some View {
+        Picker("", selection: self.privateAIBackendBinding) {
+            ForEach(self.privateAISelectableBackendPreferences) { preference in
+                Text(preference.displayName).tag(preference)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .disabled(isBusy)
+        .help("Local Fluid-1 runtime. Default is MLX on Apple Silicon.")
+    }
+
+    private var privateAISelectableBackendPreferences: [SettingsStore.PrivateAIBackendPreference] {
+        CPUArchitecture.isIntel ? [.llama] : [.mlx, .llama]
+    }
+
+    private var privateAIBackendShortName: String {
+        switch self.settings.privateAIBackendPreference {
+        case .auto:
+            return SettingsStore.PrivateAIBackendPreference.systemDefault == .mlx ? "MLX" : "llama.cpp"
+        case .llama:
+            return "llama.cpp"
+        case .mlx:
+            return "MLX"
         }
     }
 
@@ -879,6 +932,26 @@ extension AIEnhancementSettingsView {
                 }
             }
         )
+    }
+
+    private var privateAIBackendBinding: Binding<SettingsStore.PrivateAIBackendPreference> {
+        Binding(
+            get: { self.settings.privateAIBackendPreference },
+            set: { preference in
+                self.setPrivateAIBackendPreference(preference)
+            }
+        )
+    }
+
+    private var privateAIShowsBoostRow: Bool {
+        switch self.settings.privateAIBackendPreference {
+        case .llama:
+            return true
+        case .auto:
+            return CPUArchitecture.isIntel
+        case .mlx:
+            return false
+        }
     }
 
     private var privateAIContextTokenLimitBinding: Binding<Int> {
@@ -1060,8 +1133,11 @@ extension AIEnhancementSettingsView {
         }
 
         if model.canDownload {
+            let size = model.artifact.byteCount.map {
+                " (\(ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)))"
+            } ?? ""
             return PrivateAIProviderModelStatus(
-                detail: "Model not downloaded.",
+                detail: "\(self.privateAIBackendShortName) model not downloaded\(size).",
                 color: self.theme.palette.accent
             )
         }
@@ -1210,6 +1286,30 @@ extension AIEnhancementSettingsView {
             self.loadPrivateAIModel(model)
         } else {
             self.privateAILoadState = .idle
+        }
+    }
+
+    private func setPrivateAIBackendPreference(_ preference: SettingsStore.PrivateAIBackendPreference) {
+        guard self.settings.privateAIBackendPreference != preference else { return }
+        let modelID = self.privateAISelectedModelID
+
+        self.settings.privateAIBackendPreference = preference
+        UserDefaults.standard.removeObject(forKey: PrivateAIIntegrationService.localModelPathDefaultsKey)
+        self.privateAILoadState = .idle
+        self.viewModel.resetVerification(for: PrivateAIProviderFeature.shared.providerID)
+
+        Task { @MainActor in
+            await PrivateAIIntegrationService.shared.unloadCachedRuntime(
+                reason: "Fluid Intelligence backend changed to \(preference.displayName)"
+            )
+            guard self.privateAISelectedModelID == modelID else { return }
+            let model = self.selectedPrivateAIModel
+            if PrivateAIIntegrationService.isModelInstalled(model) {
+                self.verifyPrivateAIConnection(model)
+            } else {
+                self.privateAILoadState = .idle
+                self.viewModel.refreshProviderItems()
+            }
         }
     }
 
@@ -2003,6 +2103,20 @@ extension AIEnhancementSettingsView {
                 }
 
                 HStack(alignment: .center, spacing: 12) {
+                    self.privateAISettingLabel("Backend", systemImage: "cpu")
+
+                    self.privateAIBackendPicker(isBusy: isBusy)
+                        .frame(width: 210)
+
+                    Text(self.settings.privateAIBackendPreference.detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+
+                    Spacer(minLength: 0)
+                }
+
+                HStack(alignment: .center, spacing: 12) {
                     self.privateAISettingLabel("Dictation window", systemImage: "memorychip")
 
                     self.privateAIContextControl(isBusy: isBusy)
@@ -2021,7 +2135,9 @@ extension AIEnhancementSettingsView {
                 }
 
                 self.privateAIPrefixCacheRow(isBusy: isBusy)
-                self.privateAIBoostRow(isBusy: isBusy)
+                if self.privateAIShowsBoostRow {
+                    self.privateAIBoostRow(isBusy: isBusy)
+                }
             }
 
             HStack(spacing: 8) {

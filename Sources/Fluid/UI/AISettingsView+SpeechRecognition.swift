@@ -726,27 +726,6 @@ extension VoiceEngineSettingsView {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Auto-Convert Punctuation")
-                        .font(self.theme.typography.bodyStrong)
-                        .foregroundStyle(self.voiceEngineTitleText)
-                    Text("Turn spoken punctuation like comma, slash, and at sign into symbols before AI cleanup")
-                        .font(self.theme.typography.bodySmall)
-                        .foregroundStyle(self.voiceEngineSecondaryText)
-                }
-                Spacer()
-                Toggle("", isOn: self.$viewModel.autoConvertPunctuationEnabled)
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .onChange(of: self.viewModel.autoConvertPunctuationEnabled) { _, newValue in
-                        self.settings.autoConvertPunctuationEnabled = newValue
-                    }
-            }
-
-            Divider()
-                .opacity(0.2)
-
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 2) {
                     Text("Remove Filler Words")
                         .font(self.theme.typography.bodyStrong)
                         .foregroundStyle(self.voiceEngineTitleText)

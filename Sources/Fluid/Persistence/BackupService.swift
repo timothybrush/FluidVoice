@@ -14,6 +14,7 @@ struct SettingsBackupPayload: Codable, Equatable {
     let modelReasoningConfigs: [String: SettingsStore.ModelReasoningConfig]
     let privateAIPrefixKVCacheEnabled: Bool?
     let privateAIBoostEnabled: Bool?
+    let privateAIBackendPreference: SettingsStore.PrivateAIBackendPreference?
     let privateAIContextTokenLimit: Int?
     let selectedSpeechModel: SettingsStore.SpeechModel
     let selectedCohereLanguage: SettingsStore.CohereLanguage
@@ -75,6 +76,9 @@ struct SettingsBackupPayload: Codable, Equatable {
     let fillerWords: [String]
     let removeFillerWordsEnabled: Bool
     let autoConvertPunctuationEnabled: Bool?
+    let punctuationDictionaryPrefix: String?
+    // swiftlint:disable:next discouraged_optional_collection
+    let punctuationDictionaryRules: [SettingsStore.PunctuationDictionaryRule]?
     let gaavModeEnabled: Bool
     let gaavLowercaseFirstLetterEnabled: Bool?
     let gaavRemoveTrailingPeriodEnabled: Bool?

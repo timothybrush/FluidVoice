@@ -91,12 +91,12 @@
       }
     },
     {
-      "identity" : "swiftwhisper",
+      "identity" : "transcribe-cpp-swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/exPHAT/SwiftWhisper.git",
+      "location" : "https://github.com/altic-dev/transcribe-cpp-swift.git",
       "state" : {
-        "branch" : "master",
-        "revision" : "c340197966ebd264f3135d3955874b40f8ed58bc"
+        "revision" : "a16df2905f9c715344374fd2d8dd97c2712a6d96",
+        "version" : "0.1.2"
       }
     },
     {

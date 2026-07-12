@@ -1,5 +1,5 @@
 {
-  "originHash" : "064855d16f7e949cfc68503de53276b1c6192736444e73922fc77d0a6b315471",
+  "originHash" : "c0b937cf1a9f455cc47d65c349124c6a9e9f173f41a1aa7809c1c0d65cbf4229",
   "pins" : [
     {
       "identity" : "appupdater",
@@ -128,12 +128,12 @@
       }
     },
     {
-      "identity" : "swiftwhisper",
+      "identity" : "transcribe-cpp-swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/exPHAT/SwiftWhisper.git",
+      "location" : "https://github.com/altic-dev/transcribe-cpp-swift.git",
       "state" : {
-        "revision" : "a192004db08de7c6eaa169eede77f1625e7d23fb",
-        "version" : "1.2.0"
+        "revision" : "a16df2905f9c715344374fd2d8dd97c2712a6d96",
+        "version" : "0.1.2"
       }
     },
     {

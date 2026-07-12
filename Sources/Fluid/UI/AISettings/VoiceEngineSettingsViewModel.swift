@@ -45,7 +45,6 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
     }
 
     @Published var removeFillerWordsEnabled: Bool
-    @Published var autoConvertPunctuationEnabled: Bool
 
     init(settings: SettingsStore, appServices: AppServices) {
         self.settings = settings
@@ -53,7 +52,6 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
         self.previewSpeechModel = settings.selectedSpeechModel
         self.selectedSpeechProvider = settings.selectedSpeechModel.provider
         self.removeFillerWordsEnabled = settings.removeFillerWordsEnabled
-        self.autoConvertPunctuationEnabled = settings.autoConvertPunctuationEnabled
         appServices.objectWillChange
             .sink { [weak self] _ in
                 Task { @MainActor in
@@ -67,7 +65,6 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
         self.previewSpeechModel = self.settings.selectedSpeechModel
         self.selectedSpeechProvider = self.settings.selectedSpeechModel.provider
         self.removeFillerWordsEnabled = self.settings.removeFillerWordsEnabled
-        self.autoConvertPunctuationEnabled = self.settings.autoConvertPunctuationEnabled
 
         Task {
             await self.asr.checkIfModelsExistAsync()

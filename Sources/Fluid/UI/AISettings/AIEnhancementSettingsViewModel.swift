@@ -379,48 +379,47 @@ final class AIEnhancementSettingsViewModel: ObservableObject {
         let providerID = PrivateAIProviderFeature.shared.providerID
         let key = self.providerKey(for: providerID)
         guard !self.isTestingConnection else { return false }
+        let currentModel = PrivateAIModelRegistry.model(id: model.id) ?? model
 
         self.isTestingConnection = true
         self.updateConnectionStatus(.testing, for: providerID)
-        self.connectionErrorMessage = ""
 
         defer {
             self.isTestingConnection = false
         }
 
-        guard PrivateAIIntegrationService.isModelInstalled(model) else {
+        guard PrivateAIIntegrationService.isModelInstalled(currentModel) else {
             self.updateConnectionStatus(.failed, for: providerID)
-            self.connectionErrorMessage = "\(model.displayName) is not installed."
+            self.setConnectionError("\(currentModel.displayName) is not installed.", for: providerID)
             return false
         }
 
         do {
-            let status = try await PrivateAIIntegrationService.shared.loadModel(model)
+            let status = try await PrivateAIIntegrationService.shared.loadModel(currentModel)
             switch status.state {
             case .ready:
                 var fingerprints = self.settings.verifiedProviderFingerprints
-                fingerprints[key] = self.privateAIFingerprint(for: model.id)
+                fingerprints[key] = self.privateAIFingerprint(for: currentModel.id)
                 self.settings.verifiedProviderFingerprints = fingerprints
-                self.selectedModelByProvider[key] = model.id
+                self.selectedModelByProvider[key] = currentModel.id
                 self.settings.selectedModelByProvider = self.selectedModelByProvider
                 self.selectProviderForUse(providerID)
                 self.updateConnectionStatus(.success, for: providerID)
-                self.connectionErrorMessage = ""
                 DebugLogger.shared.info(
-                    "Private AI Provider verification succeeded for \(model.id)",
+                    "Private AI Provider verification succeeded for \(currentModel.id)",
                     source: "AISettingsView"
                 )
                 return true
             default:
                 self.updateConnectionStatus(.failed, for: providerID)
-                self.connectionErrorMessage = status.message ?? "\(model.displayName) did not report ready."
+                self.setConnectionError(status.message ?? "\(currentModel.displayName) did not report ready.", for: providerID)
                 return false
             }
         } catch {
             self.updateConnectionStatus(.failed, for: providerID)
-            self.connectionErrorMessage = self.privateAIErrorMessage(for: error)
+            self.setConnectionError(self.privateAIErrorMessage(for: error), for: providerID)
             DebugLogger.shared.error(
-                "Private AI Provider verification failed for \(model.id): \(self.connectionErrorMessage)",
+                "Private AI Provider verification failed for \(currentModel.id): \(self.connectionErrorMessage)",
                 source: "AISettingsView"
             )
             return false

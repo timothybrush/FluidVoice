@@ -21,6 +21,7 @@ final class SettingsStore: ObservableObject {
     static let privateAIDictationSystemOverheadTokens = 1280
     static let privateAIDictationMinimumOutputTokens = 256
     static let privateAIDictationRoundTripTokenCost = 2.75
+    static let privateAIBackendPreferenceDefaultsKey = "FluidIntelligenceBackendPreference"
     private static let forcedOnboardingResetIntroducedAt = Date(timeIntervalSince1970: 1_782_091_732)
     private let defaults = UserDefaults.standard
     private let keychain = KeychainService.shared
@@ -68,6 +69,41 @@ final class SettingsStore: ObservableObject {
             Self.clampPrivateAIContextTokenLimit(contextTokenLimit) - Self.privateAIDictationSystemOverheadTokens - estimatedInputTokens
         )
         return min(requestedOutputTokens, availableOutputTokens)
+    }
+
+    enum PrivateAIBackendPreference: String, Codable, CaseIterable, Identifiable {
+        case auto
+        case llama
+        case mlx
+
+        var id: String { self.rawValue }
+
+        /// Default backend when no preference is stored.
+        /// Apple Silicon → MLX (fastest Fluid-1 path). Intel → llama.cpp.
+        static var systemDefault: PrivateAIBackendPreference {
+            CPUArchitecture.isAppleSilicon ? .mlx : .llama
+        }
+
+        var displayName: String {
+            switch self {
+            case .auto: return Self.systemDefault.displayName
+            case .llama: return "llama.cpp (Compatibility)"
+            case .mlx: return "MLX (Recommended)"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .auto:
+                return Self.systemDefault.detail
+            case .llama:
+                return CPUArchitecture.isAppleSilicon
+                    ? "Optional and slower than MLX. Replaces MLX after verification."
+                    : "Recommended compatibility backend for Intel Macs."
+            case .mlx:
+                return "Recommended and faster than llama.cpp. Replaces it after verification."
+            }
+        }
     }
 
     // MARK: - Prompt Profiles (Unified)
@@ -1463,6 +1499,31 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    var privateAIBackendPreference: PrivateAIBackendPreference {
+        get {
+            let rawValue = self.defaults.string(forKey: Keys.privateAIBackendPreference)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            var preference = rawValue.flatMap(PrivateAIBackendPreference.init(rawValue:))
+                ?? PrivateAIBackendPreference.systemDefault
+            if preference == .auto {
+                preference = PrivateAIBackendPreference.systemDefault
+            }
+            if preference == .mlx, CPUArchitecture.isIntel {
+                return .llama
+            }
+            return preference
+        }
+        set {
+            objectWillChange.send()
+            var preference = newValue == .auto ? PrivateAIBackendPreference.systemDefault : newValue
+            if preference == .mlx, CPUArchitecture.isIntel {
+                preference = .llama
+            }
+            self.defaults.set(preference.rawValue, forKey: Keys.privateAIBackendPreference)
+        }
+    }
+
     var privateAIContextTokenLimit: Int {
         get {
             let value = self.defaults.integer(forKey: Keys.privateAIContextTokenLimit)
@@ -2191,6 +2252,7 @@ final class SettingsStore: ObservableObject {
             self.defaults.set(newValue, forKey: Keys.onboardingCompleted)
             if newValue {
                 self.defaults.set(false, forKey: Keys.manualOnboardingResetRequested)
+                self.defaults.removeObject(forKey: Keys.manualOnboardingResetRequestedAt)
             }
         }
     }
@@ -2306,6 +2368,7 @@ final class SettingsStore: ObservableObject {
         objectWillChange.send()
         self.defaults.set(false, forKey: Keys.onboardingCompleted)
         self.defaults.set(true, forKey: Keys.manualOnboardingResetRequested)
+        self.defaults.set(Date(), forKey: Keys.manualOnboardingResetRequestedAt)
         self.defaults.set(0, forKey: Keys.onboardingCurrentStep)
         self.defaults.set(false, forKey: Keys.onboardingAISkipped)
         self.defaults.set(false, forKey: Keys.onboardingPlaygroundValidated)
@@ -2321,14 +2384,18 @@ final class SettingsStore: ObservableObject {
             $0 < Self.forcedOnboardingResetIntroducedAt
         } ?? false
         let hasExistingInstallSignal = self.hasLegacyUsageSignals() || hadOpenedBeforeForcedReset
+        let hasCurrentManualReset = self.defaults.bool(forKey: Keys.manualOnboardingResetRequested)
+            && self.defaults.object(forKey: Keys.manualOnboardingResetRequestedAt) != nil
         guard self.defaults.object(forKey: Keys.onboardingGeneration) != nil,
               self.defaults.bool(forKey: Keys.onboardingCompleted) == false,
-              self.defaults.bool(forKey: Keys.manualOnboardingResetRequested) == false,
+              !hasCurrentManualReset,
               hasExistingInstallSignal
         else { return }
 
         objectWillChange.send()
         self.defaults.set(true, forKey: Keys.onboardingCompleted)
+        self.defaults.set(false, forKey: Keys.manualOnboardingResetRequested)
+        self.defaults.removeObject(forKey: Keys.manualOnboardingResetRequestedAt)
         self.defaults.set(0, forKey: Keys.onboardingCurrentStep)
         self.defaults.set(false, forKey: Keys.onboardingAISkipped)
         self.defaults.set(false, forKey: Keys.onboardingPlaygroundValidated)
@@ -2827,6 +2894,7 @@ final class SettingsStore: ObservableObject {
             modelReasoningConfigs: self.modelReasoningConfigs,
             privateAIPrefixKVCacheEnabled: self.privateAIPrefixKVCacheEnabled,
             privateAIBoostEnabled: self.privateAIBoostEnabled,
+            privateAIBackendPreference: self.privateAIBackendPreference,
             privateAIContextTokenLimit: self.privateAIContextTokenLimit,
             selectedSpeechModel: self.selectedSpeechModel,
             selectedCohereLanguage: self.selectedCohereLanguage,
@@ -2885,6 +2953,8 @@ final class SettingsStore: ObservableObject {
             fillerWords: self.fillerWords,
             removeFillerWordsEnabled: self.removeFillerWordsEnabled,
             autoConvertPunctuationEnabled: self.autoConvertPunctuationEnabled,
+            punctuationDictionaryPrefix: self.punctuationDictionaryPrefix,
+            punctuationDictionaryRules: self.punctuationDictionaryRules,
             gaavModeEnabled: self.gaavModeEnabled,
             gaavLowercaseFirstLetterEnabled: self.gaavLowercaseFirstLetterEnabled,
             gaavRemoveTrailingPeriodEnabled: self.gaavRemoveTrailingPeriodEnabled,
@@ -2923,6 +2993,9 @@ final class SettingsStore: ObservableObject {
         }
         if let privateAIBoostEnabled = payload.privateAIBoostEnabled {
             self.privateAIBoostEnabled = privateAIBoostEnabled
+        }
+        if let privateAIBackendPreference = payload.privateAIBackendPreference {
+            self.privateAIBackendPreference = privateAIBackendPreference
         }
         if let privateAIContextTokenLimit = payload.privateAIContextTokenLimit {
             self.privateAIContextTokenLimit = privateAIContextTokenLimit
@@ -2997,6 +3070,12 @@ final class SettingsStore: ObservableObject {
         self.removeFillerWordsEnabled = payload.removeFillerWordsEnabled
         if let autoConvertPunctuationEnabled = payload.autoConvertPunctuationEnabled {
             self.autoConvertPunctuationEnabled = autoConvertPunctuationEnabled
+        }
+        if let punctuationDictionaryPrefix = payload.punctuationDictionaryPrefix {
+            self.punctuationDictionaryPrefix = punctuationDictionaryPrefix
+        }
+        if let punctuationDictionaryRules = payload.punctuationDictionaryRules {
+            self.punctuationDictionaryRules = punctuationDictionaryRules
         }
         let restoredGaavModeEnabled = payload.gaavModeEnabled
         let restoredContinuousDictationModeEnabled = payload.continuousDictationModeEnabled ?? false
@@ -3606,6 +3685,162 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    static let defaultPunctuationDictionaryPrefix = "literal"
+
+    static let defaultPunctuationDictionaryRules: [PunctuationDictionaryRule] = [
+        PunctuationDictionaryRule(aliases: ["comma"], symbol: ","),
+        PunctuationDictionaryRule(aliases: ["period", "full stop"], symbol: "."),
+        PunctuationDictionaryRule(aliases: ["dot"], symbol: "."),
+        PunctuationDictionaryRule(aliases: ["question mark", "questionmark"], symbol: "?"),
+        PunctuationDictionaryRule(aliases: ["exclamation mark", "exclamation point", "bang"], symbol: "!"),
+        PunctuationDictionaryRule(aliases: ["colon"], symbol: ":"),
+        PunctuationDictionaryRule(aliases: ["semicolon", "semi colon"], symbol: ";"),
+        PunctuationDictionaryRule(aliases: ["ellipsis", "dot dot dot", "three dots"], symbol: "..."),
+        PunctuationDictionaryRule(aliases: ["slash", "forward slash", "forwardslash"], symbol: "/"),
+        PunctuationDictionaryRule(aliases: ["backslash", "back slash"], symbol: "\\"),
+        PunctuationDictionaryRule(aliases: ["hyphen"], symbol: "-"),
+        PunctuationDictionaryRule(aliases: ["dash", "minus sign"], symbol: "-"),
+        PunctuationDictionaryRule(aliases: ["em dash", "long dash"], symbol: "—"),
+        PunctuationDictionaryRule(aliases: ["en dash"], symbol: "–"),
+        PunctuationDictionaryRule(
+            aliases: ["open parenthesis", "open parentheses", "left parenthesis", "left parentheses", "open paren", "left paren"],
+            symbol: "("
+        ),
+        PunctuationDictionaryRule(
+            aliases: ["close parenthesis", "close parentheses", "right parenthesis", "right parentheses", "close paren", "right paren"],
+            symbol: ")"
+        ),
+        PunctuationDictionaryRule(aliases: ["open bracket", "left bracket", "open square bracket", "left square bracket"], symbol: "["),
+        PunctuationDictionaryRule(aliases: ["close bracket", "right bracket", "close square bracket", "right square bracket"], symbol: "]"),
+        PunctuationDictionaryRule(
+            aliases: ["open brace", "left brace", "open curly brace", "left curly brace", "open curly bracket", "left curly bracket"],
+            symbol: "{"
+        ),
+        PunctuationDictionaryRule(
+            aliases: ["close brace", "right brace", "close curly brace", "right curly brace", "close curly bracket", "right curly bracket"],
+            symbol: "}"
+        ),
+        PunctuationDictionaryRule(aliases: ["open angle bracket", "left angle bracket", "less than sign"], symbol: "<"),
+        PunctuationDictionaryRule(aliases: ["close angle bracket", "right angle bracket", "greater than sign"], symbol: ">"),
+        PunctuationDictionaryRule(aliases: ["quote", "quotes", "quotation mark", "double quote"], symbol: "\""),
+        PunctuationDictionaryRule(aliases: ["open quote", "opening quote", "open double quote", "opening double quote"], symbol: "\""),
+        PunctuationDictionaryRule(aliases: ["close quote", "closing quote", "close double quote", "closing double quote"], symbol: "\""),
+        PunctuationDictionaryRule(aliases: ["single quote"], symbol: "'"),
+        PunctuationDictionaryRule(aliases: ["apostrophe"], symbol: "'"),
+        PunctuationDictionaryRule(aliases: ["at the rate", "at sign", "commercial at"], symbol: "@"),
+        PunctuationDictionaryRule(aliases: ["ampersand", "and sign"], symbol: "&"),
+        PunctuationDictionaryRule(aliases: ["plus sign", "plus"], symbol: "+"),
+        PunctuationDictionaryRule(aliases: ["equals sign", "equal sign", "equal", "equals"], symbol: "="),
+        PunctuationDictionaryRule(aliases: ["percent sign", "percentage sign", "percent"], symbol: "%"),
+        PunctuationDictionaryRule(aliases: ["dollar sign", "dollar"], symbol: "$"),
+        PunctuationDictionaryRule(aliases: ["hash", "hash sign", "hashtag", "pound sign", "number sign"], symbol: "#"),
+        PunctuationDictionaryRule(aliases: ["asterisk", "star symbol"], symbol: "*"),
+        PunctuationDictionaryRule(aliases: ["underscore"], symbol: "_"),
+        PunctuationDictionaryRule(aliases: ["pipe", "vertical bar"], symbol: "|"),
+        PunctuationDictionaryRule(aliases: ["tilde"], symbol: "~"),
+        PunctuationDictionaryRule(aliases: ["caret"], symbol: "^"),
+        PunctuationDictionaryRule(aliases: ["backtick", "back tick"], symbol: "`"),
+    ]
+
+    struct PunctuationDictionaryRule: Codable, Identifiable, Hashable {
+        let id: UUID
+        var aliases: [String]
+        var symbol: String
+
+        init(aliases: [String], symbol: String) {
+            self.id = UUID()
+            self.aliases = Self.normalizedAliases(aliases)
+            self.symbol = Self.normalizedSymbol(symbol) ?? symbol
+        }
+
+        init(id: UUID, aliases: [String], symbol: String) {
+            self.id = id
+            self.aliases = Self.normalizedAliases(aliases)
+            self.symbol = Self.normalizedSymbol(symbol) ?? symbol
+        }
+
+        static func normalizedAlias(_ value: String) -> String? {
+            let alias = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return alias.isEmpty ? nil : alias
+        }
+
+        static func normalizedAliases(_ values: [String]) -> [String] {
+            var seen: Set<String> = []
+            var aliases: [String] = []
+            aliases.reserveCapacity(values.count)
+
+            for value in values {
+                guard let alias = self.normalizedAlias(value), !seen.contains(alias) else { continue }
+                seen.insert(alias)
+                aliases.append(alias)
+            }
+
+            return aliases
+        }
+
+        static func normalizedSymbol(_ value: String) -> String? {
+            let symbol = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return symbol.isEmpty ? nil : symbol
+        }
+    }
+
+    static func normalizedPunctuationDictionaryPrefix(_ value: String) -> String? {
+        let prefix = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return prefix.isEmpty ? nil : prefix
+    }
+
+    var punctuationDictionaryPrefix: String {
+        get {
+            guard let stored = self.defaults.string(forKey: Keys.punctuationDictionaryPrefix),
+                  let normalized = Self.normalizedPunctuationDictionaryPrefix(stored)
+            else {
+                return Self.defaultPunctuationDictionaryPrefix
+            }
+            return normalized
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(
+                Self.normalizedPunctuationDictionaryPrefix(newValue) ?? Self.defaultPunctuationDictionaryPrefix,
+                forKey: Keys.punctuationDictionaryPrefix
+            )
+        }
+    }
+
+    var punctuationDictionaryRules: [PunctuationDictionaryRule] {
+        get {
+            guard let data = defaults.data(forKey: Keys.punctuationDictionaryRules),
+                  let decoded = try? JSONDecoder().decode([PunctuationDictionaryRule].self, from: data)
+            else {
+                return Self.defaultPunctuationDictionaryRules
+            }
+            return decoded.compactMap { rule in
+                let aliases = PunctuationDictionaryRule.normalizedAliases(rule.aliases)
+                guard !aliases.isEmpty,
+                      let symbol = PunctuationDictionaryRule.normalizedSymbol(rule.symbol)
+                else {
+                    return nil
+                }
+                return PunctuationDictionaryRule(id: rule.id, aliases: aliases, symbol: symbol)
+            }
+        }
+        set {
+            objectWillChange.send()
+            let normalizedRules = newValue.compactMap { rule -> PunctuationDictionaryRule? in
+                let aliases = PunctuationDictionaryRule.normalizedAliases(rule.aliases)
+                guard !aliases.isEmpty,
+                      let symbol = PunctuationDictionaryRule.normalizedSymbol(rule.symbol)
+                else {
+                    return nil
+                }
+                return PunctuationDictionaryRule(id: rule.id, aliases: aliases, symbol: symbol)
+            }
+            if let encoded = try? JSONEncoder().encode(normalizedRules) {
+                self.defaults.set(encoded, forKey: Keys.punctuationDictionaryRules)
+            }
+        }
+    }
+
     // MARK: - GAAV Mode
 
     /// Legacy combined GAAV setting. New behavior uses the split formatting toggles below.
@@ -3769,7 +4004,7 @@ final class SettingsStore: ObservableObject {
         case whisperBase = "whisper-base"
         case whisperSmall = "whisper-small"
         case whisperMedium = "whisper-medium"
-        case whisperLargeTurbo = "whisper-large-turbo" // temporarily disabled in UI
+        case whisperLargeTurbo = "whisper-large-turbo"
         case whisperLarge = "whisper-large"
 
         var id: String {
@@ -3794,7 +4029,7 @@ final class SettingsStore: ObservableObject {
             case .whisperBase: return "Whisper Base"
             case .whisperSmall: return "Whisper Small"
             case .whisperMedium: return "Whisper Medium"
-            case .whisperLargeTurbo: return "Whisper Large Turbo (Disabled)"
+            case .whisperLargeTurbo: return "Whisper Large Turbo"
             case .whisperLarge: return "Whisper Large"
             }
         }
@@ -3827,12 +4062,12 @@ final class SettingsStore: ObservableObject {
             case .nemotronStreaming320: return "~668.2 MiB"
             case .appleSpeech: return "Built-in"
             case .appleSpeechAnalyzer: return "Built-in"
-            case .whisperTiny: return "~74.1 MiB"
-            case .whisperBase: return "~141.1 MiB"
-            case .whisperSmall: return "~465.0 MiB"
-            case .whisperMedium: return "~1.43 GiB"
-            case .whisperLargeTurbo: return "~1.51 GiB"
-            case .whisperLarge: return "~2.88 GiB"
+            case .whisperTiny: return "~43.9 MiB"
+            case .whisperBase: return "~81.0 MiB"
+            case .whisperSmall: return "~257.3 MiB"
+            case .whisperMedium: return "~793.0 MiB"
+            case .whisperLargeTurbo: return "~845.3 MiB"
+            case .whisperLarge: return "~1.55 GiB"
             }
         }
 
@@ -3845,12 +4080,12 @@ final class SettingsStore: ObservableObject {
             case .cohereTranscribeSixBit: return 1_650_748_785
             case .nemotronOffline: return 556_552_620
             case .nemotronStreaming, .nemotronStreaming320: return 700_685_415
-            case .whisperTiny: return 77_691_713
-            case .whisperBase: return 147_951_465
-            case .whisperSmall: return 487_601_967
-            case .whisperMedium: return 1_533_763_059
-            case .whisperLargeTurbo: return 1_624_555_275
-            case .whisperLarge: return 3_095_033_483
+            case .whisperTiny: return 45_981_088
+            case .whisperBase: return 84_962_880
+            case .whisperSmall: return 269_751_136
+            case .whisperMedium: return 831_538_144
+            case .whisperLargeTurbo: return 886_381_824
+            case .whisperLarge: return 1_668_741_440
             case .appleSpeech, .appleSpeechAnalyzer: return 0
             }
         }
@@ -3869,8 +4104,20 @@ final class SettingsStore: ObservableObject {
             }
         }
 
-        /// The ggml filename for Whisper models
+        /// The GGUF filename for transcribe.cpp Whisper models.
         var whisperModelFile: String? {
+            switch self {
+            case .whisperTiny: return "whisper-tiny-Q8_0.gguf"
+            case .whisperBase: return "whisper-base-Q8_0.gguf"
+            case .whisperSmall: return "whisper-small-Q8_0.gguf"
+            case .whisperMedium: return "whisper-medium-Q8_0.gguf"
+            case .whisperLargeTurbo: return "whisper-large-v3-turbo-Q8_0.gguf"
+            case .whisperLarge: return "whisper-large-v3-Q8_0.gguf"
+            default: return nil
+            }
+        }
+
+        var legacyWhisperModelFile: String? {
             switch self {
             case .whisperTiny: return "ggml-tiny.bin"
             case .whisperBase: return "ggml-base.bin"
@@ -3881,6 +4128,15 @@ final class SettingsStore: ObservableObject {
             default: return nil
             }
         }
+
+        static let legacyWhisperModelFiles: Set<String> = [
+            "ggml-tiny.bin",
+            "ggml-base.bin",
+            "ggml-small.bin",
+            "ggml-medium.bin",
+            "ggml-large-v3-turbo.bin",
+            "ggml-large-v3.bin",
+        ]
 
         /// The short model name for whisper.cpp internal usage
         var whisperModelName: String? {
@@ -3916,7 +4172,10 @@ final class SettingsStore: ObservableObject {
         /// Returns models available for the current Mac's architecture and OS
         static var availableModels: [SpeechModel] {
             allCases.filter { model in
-                if model == .whisperLargeTurbo {
+                if model == .whisperLargeTurbo, !CPUArchitecture.isAppleSilicon {
+                    return false
+                }
+                if model == .whisperLarge, !CPUArchitecture.isAppleSilicon {
                     return false
                 }
                 if model == .qwen3Asr, !Self.qwenPreviewEnabled {
@@ -4035,11 +4294,11 @@ final class SettingsStore: ObservableObject {
             case .whisperSmall:
                 return 4.0
             case .whisperMedium:
-                return 6.0
+                return 5.0
             case .whisperLargeTurbo:
-                return 8.0
+                return 6.0
             case .whisperLarge:
-                return 10.0 // Large model needs ~6-8GB working memory + model size
+                return 8.0
             }
         }
 
@@ -4465,6 +4724,7 @@ private extension SettingsStore {
         static let selectedProviderID = "SelectedProviderID"
         static let privateAIPrefixKVCacheEnabled = "PrivateAIProviderPrefixKVCacheEnabled"
         static let privateAIBoostEnabled = "PrivateAIProviderBoostEnabled"
+        static let privateAIBackendPreference = SettingsStore.privateAIBackendPreferenceDefaultsKey
         static let privateAIContextTokenLimit = "PrivateAIProviderContextTokenLimit"
         static let privateAIContextDefaultMigratedTo4K = "PrivateAIProviderContextDefaultMigratedTo4K"
         static let providerAPIKeys = "ProviderAPIKeys"
@@ -4503,6 +4763,7 @@ private extension SettingsStore {
         static let onboardingCompleted = "OnboardingCompleted"
         static let onboardingGeneration = "OnboardingGeneration"
         static let manualOnboardingResetRequested = "ManualOnboardingResetRequested"
+        static let manualOnboardingResetRequestedAt = "ManualOnboardingResetRequestedAt"
         static let onboardingCurrentStep = "OnboardingCurrentStep"
         static let onboardingAISkipped = "OnboardingAISkipped"
         static let onboardingPlaygroundValidated = "OnboardingPlaygroundValidated"
@@ -4551,6 +4812,8 @@ private extension SettingsStore {
         static let fillerWords = "FillerWords"
         static let removeFillerWordsEnabled = "RemoveFillerWordsEnabled"
         static let autoConvertPunctuationEnabled = "AutoConvertPunctuationEnabled"
+        static let punctuationDictionaryPrefix = "PunctuationDictionaryPrefix"
+        static let punctuationDictionaryRules = "PunctuationDictionaryRules"
 
         /// GAAV Mode (removes capitalization and trailing punctuation)
         static let gaavModeEnabled = "GAAVModeEnabled"
@@ -4803,6 +5066,10 @@ extension SettingsStore {
                 if model == .nemotronStreaming320 {
                     return .nemotronStreaming
                 }
+                let requiresAppleSiliconWhisper = model == .whisperLargeTurbo || model == .whisperLarge
+                if requiresAppleSiliconWhisper, !CPUArchitecture.isAppleSilicon {
+                    return .whisperBase
+                }
                 // Validate model is available on this architecture
                 if model.requiresAppleSilicon && !CPUArchitecture.isAppleSilicon {
                     return .whisperBase
@@ -4899,7 +5166,7 @@ extension SettingsStore {
             case "ggml-base.bin": newModel = .whisperBase
             case "ggml-small.bin": newModel = .whisperSmall
             case "ggml-medium.bin": newModel = .whisperMedium
-            case "ggml-large-v3.bin": newModel = .whisperLarge
+            case "ggml-large-v3.bin": newModel = CPUArchitecture.isAppleSilicon ? .whisperLarge : .whisperBase
             default: newModel = .whisperBase
             }
         case "fluidAudio":

@@ -45,6 +45,32 @@ enum AIProcessingError: LocalizedError {
     }
 }
 
+@MainActor
+private final class DictationAIStreamPreviewBuffer {
+    private var chunks: [String] = []
+    private var lastUIUpdate = CFAbsoluteTimeGetCurrent()
+    private let minimumUpdateInterval: CFTimeInterval = 0.033
+
+    func append(_ chunk: String) {
+        guard !chunk.isEmpty else { return }
+        self.chunks.append(chunk)
+
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - self.lastUIUpdate >= self.minimumUpdateInterval else { return }
+        self.lastUIUpdate = now
+        self.publish()
+    }
+
+    func flush() {
+        self.publish()
+    }
+
+    private func publish() {
+        let processedText = self.chunks.joined()
+        NotchOverlayManager.shared.updateTranscriptionText(processedText)
+    }
+}
+
 // MARK: - Sidebar Item Enum
 
 enum SidebarItem: Hashable {
@@ -1777,7 +1803,8 @@ struct ContentView: View {
     private func processTextWithAI(
         _ inputText: String,
         overrideSystemPrompt: String? = nil,
-        dictationSlot: SettingsStore.DictationShortcutSlot? = nil
+        dictationSlot: SettingsStore.DictationShortcutSlot? = nil,
+        streamHandler: PrivateAIStreamHandler? = nil
     ) async throws -> String {
         // CRITICAL FIX: Read current settings from SettingsStore, not stale @State copies
         // This ensures AI provider/model changes in AISettingsView take effect immediately
@@ -1855,7 +1882,8 @@ struct ContentView: View {
                     bundleID: appInfo.bundleId,
                     windowTitle: appInfo.windowTitle,
                     appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-                )
+                ),
+                streamHandler: streamHandler
             )
 
             if self.shouldTracePromptProcessing {
@@ -2012,15 +2040,10 @@ struct ContentView: View {
         }
         messages.append(["role": "user", "content": userMessageContent])
 
-        // NOTE: Transcription doesn't need streaming - the full result appears at once
-        // Streaming is only useful for Command/Rewrite modes where real-time display helps
-        // Using non-streaming is simpler and more reliable for transcription enhancement
-        let enableStreaming = false // Hardcoded off for transcription
+        let enableStreaming = streamHandler != nil
 
         // Build LLMClient configuration
-        // Note: No onContentChunk callback needed since we don't display real-time
-        // Thinking tokens are extracted but not displayed (no onThinkingChunk)
-        let config = LLMClient.Config(
+        var config = LLMClient.Config(
             messages: messages,
             model: derivedSelectedModel,
             baseURL: derivedBaseURL,
@@ -2030,10 +2053,38 @@ struct ContentView: View {
             temperature: isTemperatureUnsupported ? nil : 0.2,
             extraParameters: extraParams
         )
+        if enableStreaming {
+            config.onContentChunk = { chunk in
+                streamHandler?(chunk)
+            }
+        }
 
         DebugLogger.shared.info("Using LLMClient for transcription (streaming=\(enableStreaming))", source: "ContentView")
 
-        let response = try await LLMClient.shared.call(config)
+        let response: LLMClient.Response
+        if enableStreaming {
+            do {
+                response = try await LLMClient.shared.call(config)
+            } catch {
+                DebugLogger.shared.warning(
+                    "Streaming dictation post-processing failed; retrying without streaming: \(error.localizedDescription)",
+                    source: "ContentView"
+                )
+                let fallbackConfig = LLMClient.Config(
+                    messages: messages,
+                    model: derivedSelectedModel,
+                    baseURL: derivedBaseURL,
+                    apiKey: apiKey,
+                    streaming: false,
+                    tools: [],
+                    temperature: isTemperatureUnsupported ? nil : 0.2,
+                    extraParameters: extraParams
+                )
+                response = try await LLMClient.shared.call(fallbackConfig)
+            }
+        } else {
+            response = try await LLMClient.shared.call(config)
+        }
 
         // Log thinking if present (for debugging)
         if let thinking = response.thinking {
@@ -2235,12 +2286,21 @@ struct ContentView: View {
             // Ensure the status label becomes visible immediately.
             await Task.yield()
 
+            let streamPreview = DictationAIStreamPreviewBuffer()
+            let streamHandler: PrivateAIStreamHandler = { chunk in
+                Task { @MainActor in
+                    streamPreview.append(chunk)
+                }
+            }
+
             do {
                 finalText = try await self.processTextWithAI(
                     normalizedTranscribedText,
                     overrideSystemPrompt: promptOverride,
-                    dictationSlot: activeDictationSlot
+                    dictationSlot: activeDictationSlot,
+                    streamHandler: streamHandler
                 )
+                await streamPreview.flush()
             } catch {
                 // Fall back to the raw transcription so the user still gets
                 // their words typed instead of an error string.
@@ -2263,6 +2323,14 @@ struct ContentView: View {
                 finalText = normalizedTranscribedText
             }
             let postProcessingLatencyMs = Int((Date().timeIntervalSince(postProcessingStart) * 1000).rounded())
+            let postProcessingProviderName = postProcessingModelInfo.provider ?? "unknown"
+            let postProcessingModelName = postProcessingModelInfo.model ?? "unknown"
+            DebugLogger.shared.info(
+                "Dictation AI post-processing finished in \(postProcessingLatencyMs)ms "
+                    + "provider=\(postProcessingProviderName) model=\(postProcessingModelName) "
+                    + "inputChars=\(postProcessingInputChars) fallback=\(aiFallbackReason != nil)",
+                source: "ContentView"
+            )
             AnalyticsService.shared.capture(
                 .dictationPostProcessingCompleted,
                 properties: [

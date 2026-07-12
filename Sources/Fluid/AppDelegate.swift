@@ -65,10 +65,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func applicationWillTerminate(_ notification: Notification) {
         DebugLogger.shared.info("Application will terminate", source: "AppDelegate")
         self.shutdownPrivateAIRuntimeForTermination()
+        self.shutdownASRRuntimeForTermination()
         LocalAPIServer.shared.stop()
         // Clean up the update check timer
         self.updateCheckTimer?.invalidate()
         self.updateCheckTimer = nil
+    }
+
+    private func shutdownASRRuntimeForTermination() {
+        var didFinishShutdown = false
+        Task { @MainActor in
+            await AppServices.shared.shutdownForTermination()
+            didFinishShutdown = true
+        }
+
+        let deadline = Date().addingTimeInterval(8)
+        while !didFinishShutdown, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        if !didFinishShutdown {
+            DebugLogger.shared.warning(
+                "Timed out waiting for ASR runtime shutdown during termination",
+                source: "AppDelegate"
+            )
+        }
     }
 
     private func shutdownPrivateAIRuntimeForTermination() {

@@ -1,5 +1,7 @@
 import Foundation
 
+typealias PrivateAIStreamHandler = @Sendable (String) -> Void
+
 struct PrivateAIModelArtifact: Sendable, Codable, Hashable {
     var identifier: String
     var filename: String
@@ -204,6 +206,8 @@ protocol PrivateAIIntegrationProviding: Sendable {
     func expectedLocalModelURL(for model: PrivateAIRegisteredModel) -> URL
     func localModelPath(for model: PrivateAIRegisteredModel) -> String?
     func isModelInstalled(_ model: PrivateAIRegisteredModel) -> Bool
+    func installedModelURLs(for model: PrivateAIRegisteredModel) -> [URL]
+    func inactiveInstalledModelURLs(keeping model: PrivateAIRegisteredModel) -> [URL]
     func prepareModel(
         _ model: PrivateAIRegisteredModel,
         progressHandler: PrivateAIModelDownloadProgressHandler?
@@ -220,9 +224,22 @@ protocol PrivateAIIntegrationProviding: Sendable {
         runtime: PrivateAIIntegrationService.RuntimeConfiguration,
         context: PrivateAIIntegrationService.AppContext
     ) async throws -> PrivateAIIntegrationService.EnhancementResult
+    func enhanceDictation(
+        _ inputText: String,
+        runtime: PrivateAIIntegrationService.RuntimeConfiguration,
+        context: PrivateAIIntegrationService.AppContext,
+        streamHandler: PrivateAIStreamHandler?
+    ) async throws -> PrivateAIIntegrationService.EnhancementResult
 }
 
 extension PrivateAIIntegrationProviding {
+    func installedModelURLs(for model: PrivateAIRegisteredModel) -> [URL] {
+        guard let path = self.localModelPath(for: model) else { return [] }
+        return [URL(fileURLWithPath: path)]
+    }
+
+    func inactiveInstalledModelURLs(keeping _: PrivateAIRegisteredModel) -> [URL] { [] }
+
     func prepareModel(_ model: PrivateAIRegisteredModel) async throws -> URL {
         try await self.prepareModel(model, progressHandler: nil)
     }
@@ -234,6 +251,15 @@ extension PrivateAIIntegrationProviding {
 
     func shutdownForTermination() async {
         await self.unloadCachedRuntime(reason: "termination")
+    }
+
+    func enhanceDictation(
+        _ inputText: String,
+        runtime: PrivateAIIntegrationService.RuntimeConfiguration,
+        context: PrivateAIIntegrationService.AppContext,
+        streamHandler _: PrivateAIStreamHandler?
+    ) async throws -> PrivateAIIntegrationService.EnhancementResult {
+        try await self.enhanceDictation(inputText, runtime: runtime, context: context)
     }
 }
 
@@ -266,7 +292,22 @@ enum PrivateAIProviderFeature {
     }
 
     nonisolated static func verificationFingerprint(for modelID: String) -> String {
-        "private-ai-provider|\(modelID)"
+        let backendPreference = UserDefaults.standard.string(forKey: SettingsStore.privateAIBackendPreferenceDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let normalizedBackendPreference: String
+        if let backendPreference,
+           !backendPreference.isEmpty,
+           let preference = SettingsStore.PrivateAIBackendPreference(rawValue: backendPreference)
+        {
+            normalizedBackendPreference = preference == .auto
+                ? SettingsStore.PrivateAIBackendPreference.systemDefault.rawValue
+                : preference.rawValue
+        } else {
+            // Keep fingerprint in sync with SettingsStore.privateAIBackendPreference default.
+            normalizedBackendPreference = SettingsStore.PrivateAIBackendPreference.systemDefault.rawValue
+        }
+        return "private-ai-provider|\(modelID)|backend:\(normalizedBackendPreference)"
     }
 }
 

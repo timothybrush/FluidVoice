@@ -56,7 +56,7 @@ struct ASRTranscriptionResult {
 // MARK: - Transcription Provider Protocol
 
 /// Protocol that abstracts speech-to-text transcription.
-/// Implementations can use different backends (FluidAudio, SwiftWhisper, etc.)
+/// Implementations can use different backends (FluidAudio, transcribe.cpp, etc.)
 protocol TranscriptionProvider {
     /// Display name of the provider
     var name: String { get }

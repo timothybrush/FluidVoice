@@ -79,35 +79,53 @@ actor PrivateAIIntegrationService {
     }
 
     nonisolated static func canRemoveInstalledModel(_ model: PrivateAIRegisteredModel) -> Bool {
-        guard let path = self.provider.localModelPath(for: model) else {
+        guard let targetURLs = try? self.validatedModelURLs(self.provider.installedModelURLs(for: model)) else {
             return false
         }
-
-        let targetURL = URL(fileURLWithPath: path).standardizedFileURL
-        let modelDirectoryURL = self.modelDirectoryURL.standardizedFileURL
-        let expectedURL = self.expectedLocalModelURL(for: model).standardizedFileURL
-        let targetPath = targetURL.path
-        let modelDirectoryPath = modelDirectoryURL.path
-
-        return targetPath == expectedURL.path || targetPath.hasPrefix(modelDirectoryPath + "/")
+        return !targetURLs.isEmpty
     }
 
     nonisolated static func removeInstalledModel(_ model: PrivateAIRegisteredModel) throws {
-        guard let path = self.provider.localModelPath(for: model) else {
-            return
-        }
+        let requestedURLs = self.provider.installedModelURLs(for: model)
+        guard !requestedURLs.isEmpty else { return }
+        let targetURLs = try self.validatedModelURLs(requestedURLs)
+        try self.removeModelFiles(at: targetURLs)
+    }
 
-        let targetURL = URL(fileURLWithPath: path).standardizedFileURL
-        let modelDirectoryURL = self.modelDirectoryURL.standardizedFileURL
-        let expectedURL = self.expectedLocalModelURL(for: model).standardizedFileURL
-        let targetPath = targetURL.path
+    nonisolated static func removeInactiveInstalledModels(keeping model: PrivateAIRegisteredModel) throws {
+        let requestedURLs = self.provider.inactiveInstalledModelURLs(keeping: model)
+        guard !requestedURLs.isEmpty else { return }
+        let targetURLs = try self.validatedModelURLs(requestedURLs)
+        try self.removeModelFiles(at: targetURLs)
+    }
+
+    private nonisolated static func validatedModelURLs(_ urls: [URL]) throws -> [URL] {
+        guard !urls.isEmpty else { return [] }
+        let modelDirectoryURL = self.modelDirectoryURL.resolvingSymlinksInPath().standardizedFileURL
         let modelDirectoryPath = modelDirectoryURL.path
+        let targetURLs = Array(Set(urls.map { $0.resolvingSymlinksInPath().standardizedFileURL }))
+        guard targetURLs.allSatisfy({ $0.path.hasPrefix(modelDirectoryPath + "/") }) else {
+            throw PrivateAIModelRemovalError(message: "A model file is not in FluidVoice's model folder.")
+        }
+        return targetURLs
+    }
 
-        guard targetPath == expectedURL.path || targetPath.hasPrefix(modelDirectoryPath + "/") else {
-            throw PrivateAIModelRemovalError(message: "This model is not in FluidVoice's model folder.")
+    private nonisolated static func removeModelFiles(at targetURLs: [URL]) throws {
+        let modelDirectoryURL = self.modelDirectoryURL.resolvingSymlinksInPath().standardizedFileURL
+        let fileManager = FileManager.default
+        for targetURL in targetURLs where fileManager.fileExists(atPath: targetURL.path) {
+            try fileManager.removeItem(at: targetURL)
         }
 
-        try FileManager.default.removeItem(at: targetURL)
+        let parentDirectories = Set(targetURLs.map { $0.deletingLastPathComponent() })
+            .filter { $0 != modelDirectoryURL }
+            .sorted { $0.path.count > $1.path.count }
+        for directoryURL in parentDirectories {
+            guard let contents = try? fileManager.contentsOfDirectory(atPath: directoryURL.path),
+                  contents.isEmpty
+            else { continue }
+            try? fileManager.removeItem(at: directoryURL)
+        }
     }
 
     func unloadAndRemoveInstalledModel(_ model: PrivateAIRegisteredModel, reason: String) async throws {
@@ -139,7 +157,29 @@ actor PrivateAIIntegrationService {
     }
 
     func loadModel(_ model: PrivateAIRegisteredModel) async throws -> PrivateAIStatus {
-        try await Self.provider.loadModel(model)
+        let status = try await Self.provider.loadModel(model)
+        guard status.state == .ready else { return status }
+
+        do {
+            try Self.removeInactiveInstalledModels(keeping: model)
+        } catch {
+            await MainActor.run {
+                DebugLogger.shared.warning(
+                    "Could not remove inactive Fluid Intelligence backend: \(Self.errorMessage(for: error))",
+                    source: "PrivateAIProvider"
+                )
+            }
+        }
+        return status
+    }
+
+    private nonisolated static func errorMessage(for error: Error) -> String {
+        if let localizedError = error as? LocalizedError,
+           let description = localizedError.errorDescription
+        {
+            return description
+        }
+        return String(describing: error)
     }
 
     func prewarmDictation() async {
@@ -160,6 +200,20 @@ actor PrivateAIIntegrationService {
         context: AppContext
     ) async throws -> EnhancementResult {
         try await Self.provider.enhanceDictation(inputText, runtime: runtime, context: context)
+    }
+
+    func enhanceDictation(
+        _ inputText: String,
+        runtime: RuntimeConfiguration,
+        context: AppContext,
+        streamHandler: PrivateAIStreamHandler?
+    ) async throws -> EnhancementResult {
+        try await Self.provider.enhanceDictation(
+            inputText,
+            runtime: runtime,
+            context: context,
+            streamHandler: streamHandler
+        )
     }
 }
 

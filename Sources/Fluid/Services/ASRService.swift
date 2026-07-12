@@ -10,34 +10,32 @@ import AppKit
 import AudioToolbox
 import CoreAudio
 
-/// Serializes all CoreML transcription operations to prevent concurrent access issues.
-/// The actor ensures only one transcription runs at a time, preventing CoreML race conditions.
-/// Serializes all CoreML transcription operations to prevent concurrent access issues.
-/// This implementation enforces strict serialization (non-reentrant) using a task chain.
+/// Serializes transcription operations and lets teardown cancel the real queued work.
 private actor TranscriptionExecutor {
     private var lastTask: Task<Void, Never>?
-    private var currentOperationTask: Task<Any, Error>?
+    private var operationCancellations: [UUID: () -> Void] = [:]
 
     func run<T>(_ operation: @escaping () async throws -> T) async throws -> T {
         let previous = self.lastTask
+        let operationID = UUID()
         let task = Task<T, Error> {
             _ = await previous?.result
+            try Task.checkCancellation()
             return try await operation()
         }
-        self.currentOperationTask = Task<Any, Error> { try await task.value }
+        self.operationCancellations[operationID] = { task.cancel() }
         self.lastTask = Task { _ = try? await task.value }
+        defer { self.operationCancellations.removeValue(forKey: operationID) }
         return try await task.value
     }
 
-    /// Cancels any pending operations and waits for the current chain to complete.
-    /// This ensures no in-flight transcription tasks can access deallocated memory.
     func cancelAndAwaitPending() async {
-        // Cancel the current operation if running
-        self.currentOperationTask?.cancel()
-        // Wait for the last task in the chain to complete (or be cancelled)
+        for cancel in self.operationCancellations.values {
+            cancel()
+        }
         _ = await self.lastTask?.result
         self.lastTask = nil
-        self.currentOperationTask = nil
+        self.operationCancellations.removeAll()
     }
 }
 
@@ -184,6 +182,32 @@ final class ASRService: ObservableObject {
         guard let task = self.modelDownloadTask else { return }
         self.isCancellingModelDownload = true
         task.cancel()
+    }
+
+    func shutdownForTermination() async {
+        if self.isRunning {
+            await self.stopWithoutTranscription()
+        }
+
+        let preparationTask = self.ensureReadyTask
+        let downloadTask = self.modelDownloadTask
+        preparationTask?.cancel()
+        downloadTask?.cancel()
+        _ = await preparationTask?.result
+        _ = await downloadTask?.result
+        await self.providerResetDrain?.task.value
+        await self.transcriptionExecutor.cancelAndAwaitPending()
+
+        self.fluidAudioProvider = nil
+        self.parakeetRealtimeProvider = nil
+        self.externalCoreMLProvider = nil
+        self.nemotronProviders.removeAll()
+        self.whisperProvider = nil
+        self.appleSpeechProvider = nil
+        self._appleSpeechAnalyzerProvider = nil
+        self.isAsrReady = false
+        self.isLoadingModel = false
+        self.isDownloadingModel = false
     }
 
     /// The transcription provider, selected based on the unified SpeechModel setting.
@@ -514,6 +538,10 @@ final class ASRService: ObservableObject {
             self.isCancellingModelPreparation = true
             task.cancel()
         }
+        let resetDrainID = UUID()
+        let executor = self.transcriptionExecutor
+        let resetDrainTask = Task { await executor.cancelAndAwaitPending() }
+        self.providerResetDrain = (resetDrainID, resetDrainTask)
         // Keep the task handle until its provider has stopped and cancellation cleanup has
         // completed. The next ensureAsrReady call waits for it before touching the same cache.
         self.ensureReadyProviderKey = nil
@@ -867,6 +895,7 @@ final class ASRService: ObservableObject {
     private var streamingChunkAnalyticsSuccessCount: Int = 0
     private var lastStreamingChunkFailureAnalyticsAt: Date?
     private let transcriptionExecutor = TranscriptionExecutor() // Serializes all CoreML access
+    private var providerResetDrain: (id: UUID, task: Task<Void, Never>)?
     private var engineConfigurationChangeObserver: NSObjectProtocol?
     private var audioRouteRecoveryTask: Task<Void, Never>?
     private let audioRouteRecoveryDelayNanoseconds: UInt64 = 1_000_000_000
@@ -2630,28 +2659,10 @@ final class ASRService: ObservableObject {
 
     // Audio tap processing is handled by AudioCapturePipeline (thread-safe).
 
-    /// Ensures that ASR models are downloaded and ready for transcription.
-    ///
-    /// This method handles the complete model lifecycle using the appropriate
-    /// TranscriptionProvider based on CPU architecture:
-    /// - Apple Silicon: FluidAudio (CoreML optimized)
-    /// - Intel: SwiftWhisper (whisper.cpp)
-    ///
-    /// ## Performance
-    /// - First run will download models (~100-500MB depending on provider)
-    /// - Subsequent runs use cached models (much faster)
-    /// - Model loading happens asynchronously to avoid blocking UI
-    ///
-    /// ## Errors
-    /// Throws if model download or loading fails. Common causes:
-    /// - Network connectivity issues
-    /// - Insufficient disk space
     func ensureAsrReady() async throws {
         try await self.ensureAsrReady(progressHandler: nil)
     }
 
-    /// Ensures ASR models are ready, with an optional external progress handler.
-    /// - Parameter progressHandler: Optional callback for download progress (0.0 to 1.0)
     func ensureAsrReady(progressHandler: ((Double) -> Void)?) async throws {
         guard self.modelDownloadTask == nil else {
             throw NSError(
@@ -2659,6 +2670,12 @@ final class ASRService: ObservableObject {
                 code: -2001,
                 userInfo: [NSLocalizedDescriptionKey: "Another model download is already in progress."]
             )
+        }
+        if let drain = self.providerResetDrain {
+            await drain.task.value
+            if self.providerResetDrain?.id == drain.id {
+                self.providerResetDrain = nil
+            }
         }
         let provider = self.transcriptionProvider
         let model = SettingsStore.shared.selectedSpeechModel
@@ -3052,6 +3069,7 @@ final class ASRService: ObservableObject {
 
     func clearModelCache() async throws {
         DebugLogger.shared.debug("Clearing model cache via transcription provider", source: "ASRService")
+        await self.transcriptionExecutor.cancelAndAwaitPending()
         try await self.transcriptionProvider.clearCache()
         self.isAsrReady = false
         self.modelsExistOnDisk = false
@@ -3059,6 +3077,9 @@ final class ASRService: ObservableObject {
 
     func clearModelCache(for model: SettingsStore.SpeechModel) async throws {
         DebugLogger.shared.debug("Clearing model cache for \(model.displayName)", source: "ASRService")
+        if SettingsStore.shared.selectedSpeechModel == model {
+            await self.transcriptionExecutor.cancelAndAwaitPending()
+        }
         let provider = self.getProvider(for: model)
         try await provider.clearCache()
 
@@ -3361,9 +3382,9 @@ final class ASRService: ObservableObject {
             for trigger in entry.triggers {
                 guard !trigger.isEmpty else { continue }
 
-                let escapedTrigger = NSRegularExpression.escapedPattern(for: trigger)
+                let escapedTrigger = self.dictionaryPattern(for: trigger)
                 guard let regex = try? NSRegularExpression(
-                    pattern: "\\b" + escapedTrigger + "\\b",
+                    pattern: escapedTrigger,
                     options: .caseInsensitive
                 ) else { continue }
 
@@ -3371,8 +3392,31 @@ final class ASRService: ObservableObject {
             }
         }
 
-        self.cachedDictionaryPatterns = patterns
+        self.cachedDictionaryPatterns = patterns.sorted {
+            $0.regex.pattern.utf16.count > $1.regex.pattern.utf16.count
+        }
         self.dictionaryCacheNeedsRebuild = false
+    }
+
+    private static func dictionaryPattern(for trigger: String) -> String {
+        let escapedTrigger = NSRegularExpression.escapedPattern(for: trigger)
+        let prefix = self.startsWithWordCharacter(trigger) ? "\\b" : ""
+        let suffix = self.endsWithWordCharacter(trigger) ? "\\b" : ""
+        return prefix + escapedTrigger + suffix
+    }
+
+    private static func startsWithWordCharacter(_ text: String) -> Bool {
+        guard let scalar = text.unicodeScalars.first else { return false }
+        return self.isWordCharacter(scalar)
+    }
+
+    private static func endsWithWordCharacter(_ text: String) -> Bool {
+        guard let scalar = text.unicodeScalars.last else { return false }
+        return self.isWordCharacter(scalar)
+    }
+
+    private static func isWordCharacter(_ scalar: Unicode.Scalar) -> Bool {
+        CharacterSet.alphanumerics.contains(scalar) || scalar == "_"
     }
 
     /// Invalidates the dictionary cache. Called when settings change.

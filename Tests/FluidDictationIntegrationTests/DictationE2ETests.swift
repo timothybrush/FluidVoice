@@ -20,6 +20,8 @@ final class DictationE2ETests: XCTestCase {
     private let selectedModelByProviderKey = "SelectedModelByProvider"
     private let customDictionaryEntriesKey = "CustomDictionaryEntries"
     private let autoConvertPunctuationEnabledKey = "AutoConvertPunctuationEnabled"
+    private let punctuationDictionaryPrefixKey = "PunctuationDictionaryPrefix"
+    private let punctuationDictionaryRulesKey = "PunctuationDictionaryRules"
     private let commandModeLinkedToGlobalKey = "CommandModeLinkedToGlobal"
     private let commandModeSelectedProviderIDKey = "CommandModeSelectedProviderID"
     private let commandModeSelectedModelKey = "CommandModeSelectedModel"
@@ -43,6 +45,14 @@ final class DictationE2ETests: XCTestCase {
     private let privateAIContextDefaultMigratedTo4KKey = "PrivateAIProviderContextDefaultMigratedTo4K"
 
     private let verifiedProviderFingerprintsKey = "VerifiedProviderFingerprints"
+
+    private var punctuationFormattingDefaultsKeys: [String] {
+        [
+            self.autoConvertPunctuationEnabledKey,
+            self.punctuationDictionaryPrefixKey,
+            self.punctuationDictionaryRulesKey,
+        ]
+    }
 
     func testTranscriptionHistoryEntryClipboardTextPrefersProcessedText() {
         let entry = TranscriptionHistoryEntry(
@@ -298,6 +308,28 @@ final class DictationE2ETests: XCTestCase {
         }
     }
 
+    func testCustomDictionaryReplacementMatchesPunctuationTriggers() {
+        defer { ASRService.invalidateDictionaryCache() }
+        let entry = SettingsStore.CustomDictionaryEntry(
+            triggers: [",,", ","],
+            replacement: ","
+        )
+
+        self.withRestoredDefaults(keys: [self.customDictionaryEntriesKey]) {
+            SettingsStore.shared.customDictionaryEntries = [entry]
+            ASRService.invalidateDictionaryCache()
+
+            XCTAssertEqual(
+                ASRService.applyCustomDictionary("Hello,, world."),
+                "Hello, world."
+            )
+            XCTAssertEqual(
+                ASRService.applyCustomDictionary("Hello, world."),
+                "Hello, world."
+            )
+        }
+    }
+
     func testSlashCommandFormattingNormalizesSpokenAndLiteralCommands() {
         XCTAssertEqual(
             ASRService.applySlashCommandFormatting("Run slash status and then / model."),
@@ -405,32 +437,36 @@ final class DictationE2ETests: XCTestCase {
         )
     }
 
-    func testSpokenPunctuationFormattingConvertsCommonPhrases() {
-        self.withRestoredDefaults(keys: [self.autoConvertPunctuationEnabledKey]) {
+    func testSpokenPunctuationFormattingRequiresDictionaryPrefix() {
+        self.withRestoredDefaults(keys: self.punctuationFormattingDefaultsKeys) {
             UserDefaults.standard.set(true, forKey: self.autoConvertPunctuationEnabledKey)
 
             XCTAssertEqual(
                 ASRService.applySpokenPunctuationFormatting(
-                    "Hello comma world question mark open paren yes close paren quote done quote"
+                    "Hello literal comma world literal question mark literal open paren yes literal close paren literal quote done literal quote"
                 ),
                 "Hello, world? (yes) \"done\""
+            )
+            XCTAssertEqual(
+                ASRService.applySpokenPunctuationFormatting("Hello comma world question mark"),
+                "Hello comma world question mark"
             )
         }
     }
 
-    func testSpokenPunctuationFormattingConvertsCodeAndContactPunctuation() {
-        self.withRestoredDefaults(keys: [self.autoConvertPunctuationEnabledKey]) {
+    func testSpokenPunctuationFormattingConvertsCodeAndContactPunctuationWithPrefix() {
+        self.withRestoredDefaults(keys: self.punctuationFormattingDefaultsKeys) {
             UserDefaults.standard.set(true, forKey: self.autoConvertPunctuationEnabledKey)
 
             XCTAssertEqual(
                 ASRService.applySpokenPunctuationFormatting(
-                    "email at the rate example dot com slash help underscore me"
+                    "email literal at the rate example literal dot com literal slash help literal underscore me"
                 ),
                 "email@example.com/help_me"
             )
             XCTAssertEqual(
                 ASRService.applySpokenPunctuationFormatting(
-                    "email at sign example dot com",
+                    "email literal at sign example literal dot com",
                     appName: "Codex",
                     bundleID: "com.openai.codex"
                 ),
@@ -441,12 +477,20 @@ final class DictationE2ETests: XCTestCase {
                 "email at sign example"
             )
             XCTAssertEqual(
-                ASRService.applySpokenPunctuationFormatting("x hyphen ray costs 50 percent"),
+                ASRService.applySpokenPunctuationFormatting("x literal hyphen ray costs 50 literal percent"),
                 "x-ray costs 50%"
             )
             XCTAssertEqual(
-                ASRService.applySpokenPunctuationFormatting("a plus b equals c"),
+                ASRService.applySpokenPunctuationFormatting("a literal plus b literal equals c"),
                 "a + b = c"
+            )
+            XCTAssertEqual(
+                ASRService.applySpokenPunctuationFormatting("plus equal percent"),
+                "plus equal percent"
+            )
+            XCTAssertEqual(
+                ASRService.applySpokenPunctuationFormatting("literal plus literal equal 50 literal percent"),
+                "+ = 50%"
             )
             XCTAssertEqual(
                 ASRService.applySpokenPunctuationFormatting("plus I need the normal word"),
@@ -456,7 +500,7 @@ final class DictationE2ETests: XCTestCase {
     }
 
     func testSpokenPunctuationFormattingKeepsBareDotInProse() {
-        self.withRestoredDefaults(keys: [self.autoConvertPunctuationEnabledKey]) {
+        self.withRestoredDefaults(keys: self.punctuationFormattingDefaultsKeys) {
             UserDefaults.standard.set(true, forKey: self.autoConvertPunctuationEnabledKey)
 
             XCTAssertEqual(
@@ -464,58 +508,58 @@ final class DictationE2ETests: XCTestCase {
                 "the polka dot dress"
             )
             XCTAssertEqual(
-                ASRService.applySpokenPunctuationFormatting("example dot com"),
+                ASRService.applySpokenPunctuationFormatting("example literal dot com"),
                 "example.com"
             )
             XCTAssertEqual(
-                ASRService.applySpokenPunctuationFormatting("version 1 dot 2"),
+                ASRService.applySpokenPunctuationFormatting("version 1 literal dot 2"),
                 "version 1.2"
             )
         }
     }
 
     func testSpokenPunctuationFormattingPreservesSlashCommandSpacing() {
-        self.withRestoredDefaults(keys: [self.autoConvertPunctuationEnabledKey]) {
+        self.withRestoredDefaults(keys: self.punctuationFormattingDefaultsKeys) {
             UserDefaults.standard.set(true, forKey: self.autoConvertPunctuationEnabledKey)
 
             let text = ASRService.applySpokenPunctuationFormatting("Run slash status and open src slash services")
-            XCTAssertEqual(text, "Run slash status and open src/services")
+            XCTAssertEqual(text, "Run slash status and open src slash services")
             XCTAssertEqual(
                 ASRService.applySlashCommandFormatting(text),
-                "Run /status and open src/services"
+                "Run /status and open src slash services"
             )
         }
     }
 
-    func testSpokenPunctuationFormattingCleansGeneratedCommaNoise() {
-        self.withRestoredDefaults(keys: [self.autoConvertPunctuationEnabledKey]) {
+    func testSpokenPunctuationFormattingCleansGeneratedCommaNoiseWithPrefix() {
+        self.withRestoredDefaults(keys: self.punctuationFormattingDefaultsKeys) {
             UserDefaults.standard.set(true, forKey: self.autoConvertPunctuationEnabledKey)
 
             XCTAssertEqual(
-                ASRService.applySpokenPunctuationFormatting("hyphen comma hyphen comma hyphen"),
+                ASRService.applySpokenPunctuationFormatting("literal hyphen literal comma literal hyphen literal comma literal hyphen"),
                 "---"
             )
             XCTAssertEqual(
-                ASRService.applySpokenPunctuationFormatting("50 comma percent"),
+                ASRService.applySpokenPunctuationFormatting("50 literal comma literal percent"),
                 "50%"
             )
             XCTAssertEqual(
-                ASRService.applySpokenPunctuationFormatting("open bracket comma close bracket"),
+                ASRService.applySpokenPunctuationFormatting("literal open bracket literal comma literal close bracket"),
                 "[]"
             )
             XCTAssertEqual(
-                ASRService.applySpokenPunctuationFormatting("open paren comma close paren"),
+                ASRService.applySpokenPunctuationFormatting("literal open paren literal comma literal close paren"),
                 "()"
             )
             XCTAssertEqual(
-                ASRService.applySpokenPunctuationFormatting("question mark comma exclamation mark"),
+                ASRService.applySpokenPunctuationFormatting("literal question mark literal comma literal exclamation mark"),
                 "?!"
             )
         }
     }
 
     func testSpokenPunctuationFormattingPreservesExistingCommasNearSymbols() {
-        self.withRestoredDefaults(keys: [self.autoConvertPunctuationEnabledKey]) {
+        self.withRestoredDefaults(keys: self.punctuationFormattingDefaultsKeys) {
             UserDefaults.standard.set(true, forKey: self.autoConvertPunctuationEnabledKey)
 
             XCTAssertEqual(
@@ -538,12 +582,61 @@ final class DictationE2ETests: XCTestCase {
     }
 
     func testSpokenPunctuationFormattingRespectsSetting() {
-        self.withRestoredDefaults(keys: [self.autoConvertPunctuationEnabledKey]) {
+        self.withRestoredDefaults(keys: self.punctuationFormattingDefaultsKeys) {
             UserDefaults.standard.set(false, forKey: self.autoConvertPunctuationEnabledKey)
 
             XCTAssertEqual(
-                ASRService.applySpokenPunctuationFormatting("Hello comma world question mark"),
-                "Hello comma world question mark"
+                ASRService.applySpokenPunctuationFormatting("Hello literal comma world literal question mark"),
+                "Hello literal comma world literal question mark"
+            )
+        }
+    }
+
+    func testSpokenPunctuationFormattingUsesCustomPrefixAndRules() {
+        self.withRestoredDefaults(keys: self.punctuationFormattingDefaultsKeys) {
+            let settings = SettingsStore.shared
+            UserDefaults.standard.set(true, forKey: self.autoConvertPunctuationEnabledKey)
+            settings.punctuationDictionaryPrefix = "type"
+            settings.punctuationDictionaryRules = [
+                SettingsStore.PunctuationDictionaryRule(
+                    aliases: ["right arrow", "arrow"],
+                    symbol: "->"
+                ),
+            ]
+
+            XCTAssertEqual(
+                ASRService.applySpokenPunctuationFormatting("type right arrow"),
+                "->"
+            )
+            XCTAssertEqual(
+                ASRService.applySpokenPunctuationFormatting("literal right arrow"),
+                "literal right arrow"
+            )
+            XCTAssertEqual(
+                ASRService.applySpokenPunctuationFormatting("type comma"),
+                "type comma"
+            )
+        }
+    }
+
+    func testSpokenPunctuationFormattingUsesEditedRules() {
+        self.withRestoredDefaults(keys: self.punctuationFormattingDefaultsKeys) {
+            let settings = SettingsStore.shared
+            UserDefaults.standard.set(true, forKey: self.autoConvertPunctuationEnabledKey)
+            settings.punctuationDictionaryRules = [
+                SettingsStore.PunctuationDictionaryRule(
+                    aliases: ["full stop"],
+                    symbol: "."
+                ),
+            ]
+
+            XCTAssertEqual(
+                ASRService.applySpokenPunctuationFormatting("literal full stop"),
+                "."
+            )
+            XCTAssertEqual(
+                ASRService.applySpokenPunctuationFormatting("literal period"),
+                "literal period"
             )
         }
     }
@@ -779,6 +872,49 @@ final class DictationE2ETests: XCTestCase {
             normalized.contains("voice") || normalized.contains("fluidvoice") || normalized.contains("boys"),
             "Expected transcription to contain 'voice' (or a close variant like 'boys'). Got: \(raw)"
         )
+    }
+
+    func testWhisperProvider_legacyBinCacheDoesNotCountAsDownloadedOrDeletedByReadinessCheck() throws {
+        let modelDirectory = Self.modelDirectoryForRun()
+        try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+
+        let legacyURL = modelDirectory.appendingPathComponent("ggml-tiny.bin")
+        try Data([0x01, 0x02, 0x03]).write(to: legacyURL)
+
+        let provider = WhisperProvider(modelDirectory: modelDirectory, modelOverride: .whisperTiny)
+
+        XCTAssertFalse(provider.modelsExistOnDisk())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacyURL.path))
+    }
+
+    func testWhisperProvider_readinessCheckDoesNotCreateMissingDirectory() {
+        let modelDirectory = Self.modelDirectoryForRun()
+        let provider = WhisperProvider(modelDirectory: modelDirectory, modelOverride: .whisperTiny)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: modelDirectory.path))
+        XCTAssertFalse(provider.modelsExistOnDisk())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: modelDirectory.path))
+    }
+
+    func testWhisperProvider_ggufCacheReadinessDoesNotDeleteLegacyUntilExplicitClear() async throws {
+        let modelDirectory = Self.modelDirectoryForRun()
+        try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+
+        let model = SettingsStore.SpeechModel.whisperTiny
+        let ggufFilename = try XCTUnwrap(model.whisperModelFile)
+        let legacyFilename = try XCTUnwrap(model.legacyWhisperModelFile)
+        let ggufURL = modelDirectory.appendingPathComponent(ggufFilename)
+        let legacyURL = modelDirectory.appendingPathComponent(legacyFilename)
+        try Self.createSparseFile(at: ggufURL, size: model.expectedDownloadBytes)
+        try Data([0x01, 0x02, 0x03]).write(to: legacyURL)
+
+        let provider = WhisperProvider(modelDirectory: modelDirectory, modelOverride: model)
+
+        XCTAssertTrue(provider.modelsExistOnDisk())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacyURL.path))
+        try await provider.clearCache()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ggufURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
     }
 
     func testAppPromptBinding_profileOverridesModeSelection() {
@@ -1425,6 +1561,13 @@ final class DictationE2ETests: XCTestCase {
             .appendingPathComponent("FluidVoiceTests", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         return base.appendingPathComponent("WhisperModels", isDirectory: true)
+    }
+
+    private static func createSparseFile(at url: URL, size: Int64) throws {
+        _ = FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: UInt64(size))
+        try handle.close()
     }
 
     private static func normalize(_ text: String) -> String {

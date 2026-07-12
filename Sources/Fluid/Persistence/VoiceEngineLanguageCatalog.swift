@@ -2,7 +2,6 @@ import Foundation
 #if canImport(Speech)
 import Speech
 #endif
-import SwiftWhisper
 
 struct VoiceEngineLanguage: Identifiable, Equatable {
     let id: String
@@ -286,6 +285,7 @@ enum VoiceEngineLanguageCatalog {
 
     private static let whisperModelOrder: [SettingsStore.SpeechModel] = [
         .whisperSmall,
+        .whisperLargeTurbo,
     ]
 
     private static let appleSpeechAnalyzerLocaleMap: [String: String] = [
@@ -349,20 +349,27 @@ enum VoiceEngineLanguageCatalog {
     }
 
     private static let whisperLanguageCodeMap: [String: String] = {
-        let supportedCodes = Set(
-            WhisperLanguage.allCases
-                .map(\.rawValue)
-                .filter { $0 != WhisperLanguage.auto.rawValue }
-        )
-
         var languageMap: [String: String] = [:]
         for language in Self.languageDefinitions {
             let whisperCode = language.id == "he" ? "iw" : language.id
-            guard supportedCodes.contains(whisperCode) else { continue }
+            guard Self.whisperSupportedLanguageCodes.contains(whisperCode) else { continue }
             languageMap[language.id] = whisperCode
         }
         return languageMap
     }()
+
+    private static let whisperSupportedLanguageCodes: Set<String> = [
+        "af", "am", "ar", "as", "az", "ba", "be", "bg", "bn", "bo",
+        "br", "bs", "ca", "cs", "cy", "da", "de", "el", "en", "es",
+        "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "ha", "haw",
+        "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "iw", "ja",
+        "jw", "ka", "kk", "km", "kn", "ko", "la", "lb", "ln", "lo",
+        "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt",
+        "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt",
+        "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq",
+        "sr", "su", "sv", "sw", "ta", "te", "tg", "th", "tk", "tl",
+        "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "zh",
+    ]
 
     private static let languageDefinitions: [VoiceEngineLanguage] = [
         Self.language("af", "Afrikaans"),
