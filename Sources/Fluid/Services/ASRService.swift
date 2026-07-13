@@ -611,7 +611,6 @@ final class ASRService: ObservableObject {
 
     private var directAudioInput: DirectCoreAudioInput?
     private var activeAudioCaptureBackend: AudioCaptureBackend = .none
-    private var directCaptureIncompatibleDeviceIDs: Set<AudioObjectID> = []
     private var isFallingBackFromDirectCapture = false
 
     private var hasPreparedAudioCapture: Bool {
@@ -741,14 +740,6 @@ final class ASRService: ObservableObject {
             DebugLogger.shared.warning("No input device is available for direct capture", source: "ASRService")
             return false
         }
-        guard self.directCaptureIncompatibleDeviceIDs.contains(device.id) == false else {
-            DebugLogger.shared.warning(
-                "Skipping direct Core Audio input for '\(device.name)' after a runtime capture mismatch",
-                source: "ASRService"
-            )
-            return false
-        }
-
         if let directAudioInput = self.directAudioInput,
            directAudioInput.deviceID == device.id
         {
@@ -874,9 +865,6 @@ final class ASRService: ObservableObject {
         self.isFallingBackFromDirectCapture = true
         defer { self.isFallingBackFromDirectCapture = false }
 
-        if let deviceID = self.directAudioInput?.deviceID {
-            self.directCaptureIncompatibleDeviceIDs.insert(deviceID)
-        }
         let failureCount = SettingsStore.shared.directAudioCaptureConsecutiveFailures + 1
         SettingsStore.shared.directAudioCaptureConsecutiveFailures = failureCount
         let shouldDisable = Self.directCaptureShouldDisable(afterFailureCount: failureCount)

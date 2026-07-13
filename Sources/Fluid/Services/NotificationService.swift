@@ -146,7 +146,7 @@ enum NotificationService {
             content.body = "FluidVoice detected malformed microphone audio three times and switched to the compatibility audio path. You can turn it back on in Settings."
         } else {
             content.title = "Microphone audio recovered"
-            content.body = "FluidVoice detected malformed audio and switched this session to the compatibility audio path. Faster Recording Start will retry after restart. (\(failureCount)/3)"
+            content.body = "FluidVoice detected malformed audio and switched this session to the compatibility audio path. Faster Recording Start will retry next recording. (\(failureCount)/3)"
         }
         content.sound = nil
         content.userInfo = [UserInfoKey.kind: Kind.audioCaptureFallback]
