@@ -3927,9 +3927,17 @@ private final nonisolated class AudioCapturePipeline: @unchecked Sendable {
         }
         self.capturedOutputFrameCount += mono16k.count
         let capturedMilliseconds = self.capturedOutputFrameCount * 1000 / 16_000
+        // Compare sample duration with the hardware acquisition timeline. The
+        // consumer queue can be delayed under CPU pressure, but late delivery
+        // does not mean the captured audio clock is malformed.
+        let acceptedPacketEndHostTime = Self.hostTime(
+            inputHostTime,
+            advancedByFrames: acceptedRange.upperBound,
+            sampleRate: sampleRate
+        )
         let elapsedMilliseconds = Self.elapsedMilliseconds(
             from: startHostTime,
-            to: mach_absolute_time()
+            to: acceptedPacketEndHostTime
         )
         let shouldReportDurationMismatch = self.durationMismatchReported == false &&
             ASRService.directCaptureDurationIsMismatched(

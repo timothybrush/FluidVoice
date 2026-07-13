@@ -173,9 +173,12 @@ final class BackupService {
 
     func restore(_ document: AppBackupDocument) async throws {
         try self.validate(document)
-        if let pronunciationProfiles = document.pronunciationProfiles {
-            try await PronunciationDictionaryStore.shared.replaceAllProfiles(pronunciationProfiles)
-        }
+        // A legacy backup represents the complete state from before voice
+        // profiles existed. Restoring it must therefore clear newer profiles
+        // instead of leaving them attached to restored dictionary entry IDs.
+        try await PronunciationDictionaryStore.shared.replaceAllProfiles(
+            document.pronunciationProfiles ?? []
+        )
         SettingsStore.shared.restore(
             from: document.settings,
             promptProfiles: document.promptProfiles,
