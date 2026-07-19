@@ -13,7 +13,7 @@ final nonisolated class AudioEngineRetirementToken: @unchecked Sendable {
         self.engine = engine
     }
 
-    fileprivate func releaseEngine() {
+    func releaseEngine() {
         self.engine = nil
     }
 }
