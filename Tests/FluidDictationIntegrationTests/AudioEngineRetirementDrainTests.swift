@@ -12,8 +12,10 @@ final class AudioEngineRetirementDrainTests: XCTestCase {
 
         await drain.releaseAndWait(token)
 
-        XCTAssertEqual(recorder.ids, [1])
-        XCTAssertEqual(recorder.mainThreadFlags, [false])
+        XCTAssertEqual(
+            recorder.events,
+            [DeinitEvent(id: 1, occurredOnMainThread: false)]
+        )
     }
 
     func testAwaitedReleaseRunsAfterPreviouslyScheduledRelease() async throws {
@@ -29,8 +31,13 @@ final class AudioEngineRetirementDrainTests: XCTestCase {
         drain.schedule(firstToken)
         await drain.releaseAndWait(secondToken)
 
-        XCTAssertEqual(recorder.ids, [1, 2])
-        XCTAssertEqual(recorder.mainThreadFlags, [false, false])
+        XCTAssertEqual(
+            recorder.events,
+            [
+                DeinitEvent(id: 1, occurredOnMainThread: false),
+                DeinitEvent(id: 2, occurredOnMainThread: false),
+            ]
+        )
     }
 }
 
@@ -44,27 +51,28 @@ private final class DeinitProbe {
     }
 
     deinit {
-        self.recorder.record(id: self.id, wasMainThread: Thread.isMainThread)
+        self.recorder.record(
+            DeinitEvent(id: self.id, occurredOnMainThread: Thread.isMainThread)
+        )
     }
+}
+
+private struct DeinitEvent: Equatable {
+    let id: Int
+    let occurredOnMainThread: Bool
 }
 
 private final class DeinitRecorder: @unchecked Sendable {
     private let lock = NSLock()
-    private var recordedIDs: [Int] = []
-    private var recordedMainThreadFlags: [Bool] = []
+    private var recordedEvents: [DeinitEvent] = []
 
-    var ids: [Int] {
-        self.lock.withLock { self.recordedIDs }
+    var events: [DeinitEvent] {
+        self.lock.withLock { self.recordedEvents }
     }
 
-    var mainThreadFlags: [Bool] {
-        self.lock.withLock { self.recordedMainThreadFlags }
-    }
-
-    func record(id: Int, wasMainThread: Bool) {
+    func record(_ event: DeinitEvent) {
         self.lock.withLock {
-            self.recordedIDs.append(id)
-            self.recordedMainThreadFlags.append(wasMainThread)
+            self.recordedEvents.append(event)
         }
     }
 }

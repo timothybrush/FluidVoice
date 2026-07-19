@@ -4,8 +4,8 @@ import Foundation
 /// released on the dedicated retirement queue.
 ///
 /// The token is intentionally separate from the drain. Callers may retain the
-/// token across an `await`, but draining it still releases the engine itself on
-/// the retirement queue rather than on the caller's actor.
+/// token across an `await`, but its engine is still released on the retirement
+/// queue rather than on the caller's actor.
 final nonisolated class AudioEngineRetirementToken: @unchecked Sendable {
     private var engine: AnyObject?
 
@@ -13,7 +13,7 @@ final nonisolated class AudioEngineRetirementToken: @unchecked Sendable {
         self.engine = engine
     }
 
-    fileprivate func drain() {
+    fileprivate func releaseEngine() {
         self.engine = nil
     }
 }
@@ -32,16 +32,13 @@ final nonisolated class AudioEngineRetirementDrain: @unchecked Sendable {
 
     func schedule(_ token: AudioEngineRetirementToken) {
         self.queue.async {
-            token.drain()
+            token.releaseEngine()
         }
     }
 
     func releaseAndWait(_ token: AudioEngineRetirementToken) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            self.queue.async {
-                token.drain()
-                continuation.resume()
-            }
+        await self.enqueueAndWait {
+            token.releaseEngine()
         }
     }
 
@@ -49,8 +46,13 @@ final nonisolated class AudioEngineRetirementDrain: @unchecked Sendable {
     /// capture start so a fire-and-forget retirement from a non-route path cannot
     /// overlap construction of the next AVAudioEngine.
     func waitForScheduledReleases() async {
+        await self.enqueueAndWait {}
+    }
+
+    private func enqueueAndWait(_ operation: @escaping @Sendable () -> Void) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             self.queue.async {
+                operation()
                 continuation.resume()
             }
         }

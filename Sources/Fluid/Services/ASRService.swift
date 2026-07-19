@@ -610,6 +610,12 @@ final class ASRService: ObservableObject {
         case audioEngine
     }
 
+    private struct AudioRouteRecoveryRequest {
+        let generation: UInt64
+        let reason: String
+        let requiresIdlePrewarm: Bool
+    }
+
     private var directAudioInput: DirectCoreAudioInput?
     private var activeAudioCaptureBackend: AudioCaptureBackend = .none
     private var isFallingBackFromDirectCapture = false
@@ -1020,8 +1026,7 @@ final class ASRService: ObservableObject {
     private var audioRouteRecoveryTask: Task<Void, Never>?
     private let audioRouteRecoveryDelayNanoseconds: UInt64 = 300_000_000
     private var audioRouteRecoveryGeneration: UInt64 = 0
-    private var pendingAudioRouteRecoveryReason: String?
-    private var pendingAudioRouteRecoveryRequiresIdlePrewarm = false
+    private var pendingAudioRouteRecovery: AudioRouteRecoveryRequest?
     private var audioEngineStandbyTask: Task<Void, Never>?
     private let audioEngineStandbyNanoseconds: UInt64 = 8_000_000_000
     private var isEngineTapInstalled = false
@@ -2356,10 +2361,14 @@ final class ASRService: ObservableObject {
         requiresIdlePrewarm: Bool = false
     ) {
         self.audioRouteRecoveryGeneration &+= 1
-        let generation = self.audioRouteRecoveryGeneration
-        self.pendingAudioRouteRecoveryReason = reason
-        self.pendingAudioRouteRecoveryRequiresIdlePrewarm =
-            self.pendingAudioRouteRecoveryRequiresIdlePrewarm || requiresIdlePrewarm
+        let requiresPrewarmAfterRecovery =
+            requiresIdlePrewarm || self.pendingAudioRouteRecovery?.requiresIdlePrewarm == true
+        let request = AudioRouteRecoveryRequest(
+            generation: self.audioRouteRecoveryGeneration,
+            reason: reason,
+            requiresIdlePrewarm: requiresPrewarmAfterRecovery
+        )
+        self.pendingAudioRouteRecovery = request
 
         self.audioLevelSubject.send(0.0)
         if self.isRunning {
@@ -2367,12 +2376,12 @@ final class ASRService: ObservableObject {
             // until Core Audio has been quiet for the debounce interval.
             self.audioCapturePipeline.setRecordingEnabled(false)
             DebugLogger.shared.warning(
-                "Audio route changed while recording; waiting for topology quiet (\(reason), generation=\(generation))",
+                "Audio route changed while recording; waiting for topology quiet (\(reason), generation=\(request.generation))",
                 source: "ASRService"
             )
         } else {
             DebugLogger.shared.debug(
-                "Audio route changed while idle; waiting for topology quiet (\(reason), generation=\(generation))",
+                "Audio route changed while idle; waiting for topology quiet (\(reason), generation=\(request.generation))",
                 source: "ASRService"
             )
         }
@@ -2384,18 +2393,10 @@ final class ASRService: ObservableObject {
             return
         }
 
-        self.armAudioRouteRecovery(
-            generation: generation,
-            reason: reason,
-            requiresIdlePrewarm: self.pendingAudioRouteRecoveryRequiresIdlePrewarm
-        )
+        self.armAudioRouteRecovery(request)
     }
 
-    private func armAudioRouteRecovery(
-        generation: UInt64,
-        reason: String,
-        requiresIdlePrewarm: Bool
-    ) {
+    private func armAudioRouteRecovery(_ request: AudioRouteRecoveryRequest) {
         let recoveryDelayNanoseconds = self.audioRouteRecoveryDelayNanoseconds
         self.audioRouteRecoveryTask = Task { [weak self] in
             do {
@@ -2403,11 +2404,7 @@ final class ASRService: ObservableObject {
             } catch {
                 return
             }
-            await self?.performAudioRouteRecovery(
-                generation: generation,
-                reason: reason,
-                requiresIdlePrewarm: requiresIdlePrewarm
-            )
+            await self?.performAudioRouteRecovery(request)
         }
     }
 
@@ -2416,8 +2413,7 @@ final class ASRService: ObservableObject {
     /// rebuild that yielded while AVAudioEngine was deallocating.
     private func cancelAudioRouteRecoveryAndWait() async {
         self.audioRouteRecoveryGeneration &+= 1
-        self.pendingAudioRouteRecoveryReason = nil
-        self.pendingAudioRouteRecoveryRequiresIdlePrewarm = false
+        self.pendingAudioRouteRecovery = nil
         let task = self.audioRouteRecoveryTask
         task?.cancel()
         _ = await task?.result
@@ -2426,69 +2422,63 @@ final class ASRService: ObservableObject {
         await self.audioEngineRetirementDrain.waitForScheduledReleases()
     }
 
-    private func performAudioRouteRecovery(
-        generation: UInt64,
-        reason: String,
-        requiresIdlePrewarm: Bool
-    ) async {
-        guard generation == self.audioRouteRecoveryGeneration, Task.isCancelled == false else { return }
+    private func performAudioRouteRecovery(_ request: AudioRouteRecoveryRequest) async {
+        guard request.generation == self.audioRouteRecoveryGeneration, Task.isCancelled == false else { return }
         guard self.isRecoveringAudioRoute == false else { return }
 
         self.isRecoveringAudioRoute = true
         defer {
-            self.isRecoveringAudioRoute = false
-
-            if generation == self.audioRouteRecoveryGeneration {
-                self.pendingAudioRouteRecoveryReason = nil
-                self.pendingAudioRouteRecoveryRequiresIdlePrewarm = false
-                self.audioRouteRecoveryTask = nil
-            } else if let pendingReason = self.pendingAudioRouteRecoveryReason {
-                self.armAudioRouteRecovery(
-                    generation: self.audioRouteRecoveryGeneration,
-                    reason: pendingReason,
-                    requiresIdlePrewarm: self.pendingAudioRouteRecoveryRequiresIdlePrewarm
-                )
-            } else {
-                self.audioRouteRecoveryTask = nil
-            }
+            self.finishAudioRouteRecovery(request)
         }
 
         if self.isRunning {
-            await self.recoverActiveAudioRoute(generation: generation, reason: reason)
+            await self.recoverActiveAudioRoute(request)
         } else {
-            await self.recoverIdleAudioRoute(
-                generation: generation,
-                reason: reason,
-                requiresPrewarm: requiresIdlePrewarm
-            )
+            await self.recoverIdleAudioRoute(request)
         }
     }
 
-    private func recoverIdleAudioRoute(
-        generation: UInt64,
-        reason: String,
-        requiresPrewarm: Bool
-    ) async {
-        let shouldRebuild = self.hasPreparedAudioCapture || requiresPrewarm
+    private func finishAudioRouteRecovery(_ completedRequest: AudioRouteRecoveryRequest) {
+        self.isRecoveringAudioRoute = false
+
+        guard let pendingRequest = self.pendingAudioRouteRecovery else {
+            self.audioRouteRecoveryTask = nil
+            return
+        }
+        guard pendingRequest.generation != completedRequest.generation else {
+            self.pendingAudioRouteRecovery = nil
+            self.audioRouteRecoveryTask = nil
+            return
+        }
+
+        self.armAudioRouteRecovery(pendingRequest)
+    }
+
+    private func recoverIdleAudioRoute(_ request: AudioRouteRecoveryRequest) async {
+        let shouldRebuild = self.hasPreparedAudioCapture || request.requiresIdlePrewarm
         guard shouldRebuild else { return }
 
         // If another event arrives while retirement is draining, the next
         // generation still needs to restore the prepared capture backend.
-        self.pendingAudioRouteRecoveryRequiresIdlePrewarm = true
-        await self.retireAudioEngineAndWait(reason: "idle_route_change:\(reason)")
+        self.pendingAudioRouteRecovery = AudioRouteRecoveryRequest(
+            generation: request.generation,
+            reason: request.reason,
+            requiresIdlePrewarm: true
+        )
+        await self.retireAudioEngineAndWait(reason: "idle_route_change:\(request.reason)")
 
-        guard generation == self.audioRouteRecoveryGeneration, Task.isCancelled == false else { return }
+        guard request.generation == self.audioRouteRecoveryGeneration, Task.isCancelled == false else { return }
         self.prewarmAudioEngineIfPossible(
             reason: "idle_route_change",
             allowDuringRouteRecovery: true
         )
     }
 
-    private func recoverActiveAudioRoute(generation: UInt64, reason: String) async {
+    private func recoverActiveAudioRoute(_ request: AudioRouteRecoveryRequest) async {
         guard self.isRunning else { return }
 
         DebugLogger.shared.info(
-            "Recovering audio route after \(reason) (generation=\(generation))",
+            "Recovering audio route after \(request.reason) (generation=\(request.generation))",
             source: "ASRService"
         )
         self.audioCapturePipeline.setRecordingEnabled(false)
@@ -2496,7 +2486,7 @@ final class ASRService: ObservableObject {
         self.stopActiveAudioCapture()
         await self.retireAudioEngineAndWait(reason: "audio_route_recovery")
 
-        guard generation == self.audioRouteRecoveryGeneration, Task.isCancelled == false else { return }
+        guard request.generation == self.audioRouteRecoveryGeneration, Task.isCancelled == false else { return }
 
         do {
             self.audioCapturePipeline.setRecordingEnabled(
@@ -2511,11 +2501,11 @@ final class ASRService: ObservableObject {
             }
 
             DebugLogger.shared.info(
-                "Audio route recovery succeeded (generation=\(generation))",
+                "Audio route recovery succeeded (generation=\(request.generation))",
                 source: "ASRService"
             )
         } catch {
-            guard generation == self.audioRouteRecoveryGeneration, Task.isCancelled == false else { return }
+            guard request.generation == self.audioRouteRecoveryGeneration, Task.isCancelled == false else { return }
             self.audioCapturePipeline.setRecordingEnabled(false)
             self.stopActiveAudioCapture()
             DebugLogger.shared.error("Audio route recovery failed: \(error)", source: "ASRService")
