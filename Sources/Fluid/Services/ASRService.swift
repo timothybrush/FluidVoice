@@ -1331,6 +1331,8 @@ final class ASRService: ObservableObject {
             DebugLogger.shared.warning("⚠️ START() blocked - already running (started: \(self.isRunning), starting: \(self.isStarting))", source: "ASRService")
             return
         }
+        self.isStarting = true
+        defer { self.isStarting = false }
 
         // Reset media pause state for this session
         self.didPauseMediaForThisSession = false
@@ -1365,8 +1367,6 @@ final class ASRService: ObservableObject {
         self.benchmarkLog("recording_start model=\(dims.model) provider=\(dims.provider) supportsStreaming=\(SettingsStore.shared.selectedSpeechModel.supportsStreaming)")
         DebugLogger.shared.debug("✅ Buffers cleared", source: "ASRService")
 
-        self.isStarting = true
-        defer { self.isStarting = false }
         self.isDictionaryTrainingCaptureActive = false
 
         do {
